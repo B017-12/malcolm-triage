@@ -1,0 +1,178 @@
+{
+  "active_patient_id": "1429",
+  "patients": {
+    "1429": {
+      "patient_id": "1429",
+      "name": "Mika Hämäläinen",
+      "pronoun_obj": "him",
+      "wing": "Wing A",
+      "room": "Room 153",
+      "condition": "Dialysis",
+      "department": "Nephrology — Renal Care",
+      "protocol": "Routine Dialysis",
+      "baseline_bpm": 90,
+      "current_bpm": 90,
+      "wave_state": "Awake / Normal Sinus Rhythm",
+      "conversation_stage": "idle",
+      "ui_mode": "patient_stats",
+      "last_clinician_input": "Sure a de show o the war table actually never mind",
+      "last_transcript": "Understood, Doctor. I am standing by for your next instruction on the ward.",
+      "patient_panel": {
+        "name": "Mika Hämäläinen",
+        "patientId": "1429",
+        "wing": "Wing A",
+        "room": "153",
+        "department": "Nephrology — Renal Care",
+        "protocol": "Routine Dialysis",
+        "rhythm": "Normal Sinus Rhythm",
+        "telemetryDetail": "Awake • Baseline 90 BPM • Signal Locked",
+        "nurseRounds": "No comments from nurse rounds.",
+        "symptom": "Patient has not reported any discomfort or odd symptoms thus far.",
+        "dispatchStatus": ""
+      },
+      "nurse_notes": [],
+      "patient_symptoms": [],
+      "nurse_dispatched": false,
+      "check_in_active": false,
+      "clinician_report_ready": false,
+      "bedside_messages": [],
+      "audit_log": [
+        {
+          "timestamp": "2026-11-15T02:12:37Z",
+          "actor": "Clinician -> Malcolm",
+          "action": "MULTI_PATIENT_QUERY",
+          "details": "Answered cross-patient clinical RAG query over patients_db.json.",
+          "pii_redacted": true,
+          "engine": "Gemini gemini-3.5-flash-lite + Local RAG"
+        }
+      ],
+      "custom_pane": {
+        "kind": "ward_table",
+        "title": "Active Ward Roster — All Monitored Patients",
+        "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
+        "filterWing": ""
+      }
+    },
+    "1430": {
+      "patient_id": "1430",
+      "name": "Aino Virtanen",
+      "pronoun_obj": "her",
+      "wing": "Wing B",
+      "room": "Room 204",
+      "condition": "Post-Op Mitral Valve Repair",
+      "department": "Cardiothoracic Surgery",
+      "protocol": "Post-Op Telemetry & Anticoagulation",
+      "baseline_bpm": 76,
+      "current_bpm": 76,
+      "wave_state": "Awake / Normal Sinus Rhythm",
+      "conversation_stage": "idle",
+      "ui_mode": "idle",
+      "last_clinician_input": "",
+      "last_transcript": "Listening for clinician request...",
+      "patient_panel": {
+        "name": "Aino Virtanen",
+        "patientId": "1430",
+        "wing": "Wing B",
+        "room": "204",
+        "department": "Cardiothoracic Surgery",
+        "protocol": "Post-Op Telemetry & Anticoagulation",
+        "rhythm": "Normal Sinus Rhythm",
+        "telemetryDetail": "Awake • Baseline 76 BPM • Signal Locked",
+        "nurseRounds": "04:30 RN: Sternal dressing clean and dry; pain 2/10 managed with acetaminophen.",
+        "symptom": "No new acute discomfort reported since 04:30 nursing round.",
+        "dispatchStatus": ""
+      },
+      "nurse_notes": [
+        "04:30 RN: Sternal dressing clean and dry; pain 2/10 managed with acetaminophen."
+      ],
+      "patient_symptoms": [],
+      "nurse_dispatched": false,
+      "check_in_active": false,
+      "clinician_report_ready": false,
+      "bedside_messages": [],
+      "audit_log": []
+    },
+    "1431": {
+      "patient_id": "1431",
+      "name": "Jukka Korhonen",
+      "pronoun_obj": "him",
+      "wing": "Wing C",
+      "room": "Room 312",
+      "condition": "Acute Bacterial Pneumonia",
+      "department": "Pulmonology & Respiratory Care",
+      "protocol": "2L O2 Nasal Cannula & IV Ceftriaxone",
+      "baseline_bpm": 104,
+      "current_bpm": 104,
+      "wave_state": "Awake / Mild Sinus Tachycardia",
+      "conversation_stage": "idle",
+      "ui_mode": "idle",
+      "last_clinician_input": "",
+      "last_transcript": "Listening for clinician request...",
+      "patient_panel": {
+        "name": "Jukka Korhonen",
+        "patientId": "1431",
+        "wing": "Wing C",
+        "room": "312",
+        "department": "Pulmonology & Respiratory Care",
+        "protocol": "2L O2 Nasal Cannula & IV Ceftriaxone",
+        "rhythm": "Mild Sinus Tachycardia",
+        "telemetryDetail": "Awake • Baseline 104 BPM • SpO2 Monitored",
+        "nurseRounds": "05:15 RN: SpO2 96% on 2L O2; productive cough improving after nebulizer.",
+        "symptom": "Mild shortness of breath on exertion",
+        "dispatchStatus": ""
+      },
+      "nurse_notes": [
+        "05:15 RN: SpO2 96% on 2L O2; productive cough improving after nebulizer."
+      ],
+      "patient_symptoms": [
+        "Mild shortness of breath on exertion"
+      ],
+      "nurse_dispatched": false,
+      "check_in_active": false,
+      "clinician_report_ready": false,
+      "bedside_messages": [],
+      "audit_log": []
+    },
+    "1432": {
+      "patient_id": "1432",
+      "name": "Sanna Laine",
+      "pronoun_obj": "her",
+      "wing": "Wing A",
+      "room": "Room 118",
+      "condition": "Post-Concussion Neurological Observation",
+      "department": "Neurology — Trauma Unit",
+      "protocol": "Q2H Neuro Checks & Cranial Telemetry",
+      "baseline_bpm": 64,
+      "current_bpm": 64,
+      "wave_state": "Sleeping / Slow Sinus Rhythm",
+      "conversation_stage": "idle",
+      "ui_mode": "idle",
+      "last_clinician_input": "",
+      "last_transcript": "Listening for clinician request...",
+      "patient_panel": {
+        "name": "Sanna Laine",
+        "patientId": "1432",
+        "wing": "Wing A",
+        "room": "118",
+        "department": "Neurology — Trauma Unit",
+        "protocol": "Q2H Neuro Checks & Cranial Telemetry",
+        "rhythm": "Slow Sinus Rhythm",
+        "telemetryDetail": "Sleeping • Baseline 64 BPM • Signal Locked",
+        "nurseRounds": "06:00 RN: Pupils equal and reactive (PERRLA); patient sleeping in darkened room.",
+        "symptom": "Mild photophobia reported earlier this shift",
+        "dispatchStatus": ""
+      },
+      "nurse_notes": [
+        "06:00 RN: Pupils equal and reactive (PERRLA); patient sleeping in darkened room."
+      ],
+      "patient_symptoms": [
+        "Mild photophobia reported earlier this shift"
+      ],
+      "nurse_dispatched": false,
+      "check_in_active": false,
+      "clinician_report_ready": false,
+      "bedside_messages": [],
+      "audit_log": []
+    }
+  }
+}

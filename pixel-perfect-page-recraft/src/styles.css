@@ -1,0 +1,283 @@
+/*
+ * Tailwind v4 entry: config lives here, with no tailwind.config.js or PostCSS plugin.
+ * - Keep every @import in this top block, above @theme and the rest of the file. Install an
+ *   npm package before @importing its CSS. Never @import a remote URL (web fonts, CDN CSS): the
+ *   build resolves @import from the filesystem. Load those with a <link> in the head() of
+ *   src/routes/__root.tsx and name the family in a --font-* token in @theme inline below.
+ */
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Malcolm design system — architectural clinical: midnight navy / arterial crimson wave mesh,
+ * a single stark white disc, razor-sharp 0-radius geometry everywhere else.
+ * Waves and ring take their colors from the --wave-*, --ridge-* and --blade-* tokens.
+ */
+
+@theme inline {
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-4xl: 0px;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-core: var(--core);
+  --color-core-ink: var(--core-ink);
+  --color-core-ink-strong: var(--core-ink-strong);
+  --color-vitals: var(--vitals);
+  --color-rose: var(--rose);
+  --color-rose-soft: var(--rose-soft);
+  --color-ledger: var(--ledger);
+  --color-ledger-meta: var(--ledger-meta);
+  --color-label: var(--label);
+  --color-hairline: var(--hairline);
+  --color-frame: var(--frame);
+  --color-pane: var(--pane);
+  --color-pane-meta: var(--pane-meta);
+  --color-text-soft: var(--text-soft);
+  --color-text-bright: var(--text-bright);
+  --color-telemetry: var(--telemetry);
+  --color-alert-tint: var(--alert-tint);
+  --color-alert: var(--alert);
+}
+
+:root {
+  --radius: 0px;
+
+  --background: oklch(0.153 0.032 266.3); /* midnight navy #060B19 */
+  --foreground: oklch(1 0 0);
+  --card: oklch(0.16 0.02 265.6);
+  --card-foreground: oklch(1 0 0);
+  --popover: oklch(0.16 0.02 265.6);
+  --popover-foreground: oklch(1 0 0);
+  --primary: oklch(0.754 0.139 232.7); /* #38BDF8 */
+  --primary-foreground: oklch(0.153 0.032 266.3);
+  --secondary: oklch(0.208 0.04 265.8);
+  --secondary-foreground: oklch(1 0 0);
+  --muted: oklch(0.208 0.04 265.8);
+  --muted-foreground: oklch(0.711 0.035 256.8);
+  --accent: oklch(1 0 0 / 8%);
+  --accent-foreground: oklch(1 0 0);
+  --destructive: oklch(0.586 0.222 17.6);
+  --destructive-foreground: oklch(1 0 0);
+  --border: oklch(1 0 0 / 15%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.754 0.139 232.7 / 60%);
+
+  /* Central disc */
+  --core: oklch(1 0 0); /* stark white */
+  --core-ink: oklch(0.153 0.032 266.3); /* #060B19 */
+  --core-ink-strong: oklch(0.208 0.04 265.8); /* #0F172A */
+
+  /* Radial blades */
+  --blade-idle-inner: oklch(1 0 0); /* #FFFFFF */
+  --blade-idle-outer: oklch(0.754 0.139 232.7); /* #38BDF8 */
+  --blade-vitals: oklch(0.645 0.215 16.4); /* #F43F5E */
+  --vitals: oklch(0.586 0.222 17.6); /* ECG #E11D48 */
+  --ecg-base: oklch(0.941 0.03 12.6); /* #FFE4E6 */
+
+  /* Right clinical pane */
+  --pane: oklch(0.145 0.01 265); /* #07090E */
+  --pane-meta: oklch(0.719 0.169 13.4); /* rose-400 */
+  --text-soft: oklch(0.869 0.02 252.9); /* slate-300 */
+  --text-bright: oklch(0.929 0.013 255.5); /* slate-200 */
+  --telemetry: oklch(0.765 0.177 163.2); /* emerald-400 */
+  --alert-tint: oklch(0.271 0.105 12.1); /* rose-950 */
+  --alert: oklch(0.586 0.222 17.6); /* rose-600 */
+
+  /* Ledger */
+  --ledger: oklch(0.16 0.02 265.6); /* #090D16 */
+  --rose: oklch(0.645 0.215 16.4); /* rose-500 #F43F5E */
+  --rose-soft: oklch(0.81 0.106 11.6); /* rose-300 #FDA4AF */
+  --ledger-meta: oklch(0.78 0.07 230); /* muted cyan-slate */
+  --label: oklch(0.711 0.035 256.8); /* slate-400 */
+  --hairline: oklch(1 0 0 / 10%);
+  --frame: oklch(1 0 0 / 15%);
+
+  /* Wave mesh — idle */
+  --wave-idle-1: oklch(0.208 0.04 265.8); /* sapphire #0F172A */
+  --wave-idle-2: oklch(0.488 0.217 264.4); /* cobalt #1D4ED8 */
+  --wave-idle-3: oklch(0.588 0.139 242); /* azure #0284C7 */
+  --wave-idle-4: oklch(0.457 0.215 277); /* indigo #4338CA */
+  --ridge-idle: oklch(0.797 0.134 211.5); /* cyan #22D3EE */
+  /* Wave mesh — vitals */
+  --wave-vitals-1: oklch(0.142 0.034 355.3); /* burgundy #14040A */
+  --wave-vitals-2: oklch(0.41 0.15 10.3); /* arterial #881337 */
+  --wave-vitals-3: oklch(0.586 0.222 17.6); /* ruby #E11D48 */
+  --wave-vitals-4: oklch(0.514 0.198 16.9); /* rose #BE123C */
+  --ridge-vitals: oklch(0.719 0.169 13.4); /* #FB7185 */
+
+  --chart-1: var(--primary);
+  --chart-2: var(--wave-idle-2);
+  --chart-3: var(--wave-idle-4);
+  --chart-4: var(--rose);
+  --chart-5: var(--wave-vitals-2);
+  --sidebar: var(--card);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+/* Base canvas behind the wave mesh, crossfades with the state */
+@utility mesh-base {
+  background-color: var(--background);
+  transition: background-color 1400ms ease;
+}
+[data-mode="vitals"] .mesh-base,
+.mesh-base[data-mode="vitals"] {
+  background-color: var(--wave-vitals-1);
+}
+
+/* Stark white disc with a soft radial glow */
+@utility core-disc {
+  background: radial-gradient(circle at 50% 45%, var(--core) 0%, var(--core) 62%, color-mix(in oklab, var(--core) 92%, var(--primary)) 100%);
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--core) 60%, transparent),
+    0 0 60px 6px color-mix(in oklab, var(--core) 22%, transparent),
+    0 0 140px 30px color-mix(in oklab, var(--primary) 18%, transparent);
+  transition: box-shadow 1200ms ease;
+}
+[data-vitals="true"] .core-disc {
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--core) 60%, transparent),
+    0 0 60px 6px color-mix(in oklab, var(--core) 22%, transparent),
+    0 0 140px 30px color-mix(in oklab, var(--rose) 22%, transparent);
+}
+
+/* Smoked-glass ledger */
+@utility ledger-glass {
+  background-color: color-mix(in oklab, var(--ledger) 85%, transparent);
+  backdrop-filter: blur(40px);
+}
+
+/* Wave fills + 1px ridge highlights crossfade by [data-mode] on an ancestor */
+@utility wave-layer {
+  transition: fill 1400ms ease;
+}
+@utility wave-ridge {
+  fill: none;
+  stroke: var(--ridge-idle);
+  transition: stroke 1400ms ease;
+}
+[data-mode="vitals"] .wave-ridge { stroke: var(--ridge-vitals); }
+
+.wave-1, .wave-4 { fill: var(--wave-idle-1); }
+.wave-2, .wave-7 { fill: var(--wave-idle-2); }
+.wave-3, .wave-6 { fill: var(--wave-idle-4); }
+.wave-5, .wave-8 { fill: var(--wave-idle-3); }
+[data-mode="vitals"] .wave-1, [data-mode="vitals"] .wave-4 { fill: var(--wave-vitals-1); }
+[data-mode="vitals"] .wave-2, [data-mode="vitals"] .wave-7 { fill: var(--wave-vitals-2); }
+[data-mode="vitals"] .wave-3, [data-mode="vitals"] .wave-6 { fill: var(--wave-vitals-4); }
+[data-mode="vitals"] .wave-5, [data-mode="vitals"] .wave-8 { fill: var(--wave-vitals-3); }
+
+@keyframes vitals-breathe {
+  0%, 100% { opacity: 1; }
+  15% { opacity: 0.82; }
+}
+[data-mode="vitals"] .waves-pulse {
+  animation: vitals-breathe var(--beat, 0.667s) ease-in-out infinite;
+}
+
+/* Radial blade gradient stops */
+.blade-stop-inner { stop-color: var(--blade-idle-inner); transition: stop-color 800ms ease; }
+.blade-stop-outer { stop-color: var(--blade-idle-outer); transition: stop-color 800ms ease; }
+[data-vitals="true"] .blade-stop-inner,
+[data-vitals="true"] .blade-stop-outer { stop-color: var(--blade-vitals); }
+
+/* ECG inside the white disc: pale baseline + crimson sweep once per beat */
+@utility ecg-base {
+  stroke: var(--ecg-base);
+}
+@keyframes ecg-sweep {
+  from { stroke-dashoffset: 280; }
+  to { stroke-dashoffset: 0; }
+}
+@utility ecg-sweep {
+  stroke: var(--vitals);
+  animation: ecg-sweep 0.667s linear infinite;
+}
+
+@keyframes beat-dot {
+  0% { transform: scale(1.4); opacity: 1; }
+  35% { transform: scale(0.8); opacity: 0.5; }
+  100% { transform: scale(1); opacity: 0.85; }
+}
+@utility animate-beat-dot {
+  animation: beat-dot 0.667s cubic-bezier(0.2, 0.8, 0.3, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-beat-dot,
+  [data-mode="vitals"] .waves-pulse {
+    animation: none;
+  }
+  .ecg-sweep {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}
