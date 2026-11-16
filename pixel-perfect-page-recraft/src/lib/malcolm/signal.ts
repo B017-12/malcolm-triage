@@ -102,13 +102,19 @@ export interface PatientSummary {
   dispatchStatus: string;
 }
 
-export type CustomPaneKind = "patient" | "ward_table" | "ward_stats";
+export type CustomPaneKind =
+  | "patient"
+  | "ward_table"
+  | "ward_stats"
+  | "timetable"
+  | "custom_html";
 
 export interface CustomPaneConfig {
   kind: CustomPaneKind;
   title?: string;
   subtitle?: string;
   filterWing?: string;
+  generatedHtml?: string;
 }
 
 export interface WardPatientRow {
@@ -165,6 +171,7 @@ export const DEFAULT_CUSTOM_PANE: CustomPaneConfig = {
   title: "",
   subtitle: "",
   filterWing: "",
+  generatedHtml: "",
 };
 
 export const DEFAULT_WARD_HUD: WardHudData = {
@@ -283,14 +290,22 @@ export const DEFAULT_PATIENT: PatientSummary = {
   dispatchStatus: "",
 };
 
+export interface ExportRequestPayload {
+  id: string;
+  format: "xlsx" | "png" | "both";
+  kind: string;
+}
+
 export interface RemoteState {
   mode?: MalcolmMode;
   bpm?: number;
   caption?: string;
   clinicianCaption?: string;
+  replySeq?: number;
   patient?: Partial<PatientSummary>;
   customPane?: CustomPaneConfig;
   wardHud?: WardHudData;
+  exportRequest?: ExportRequestPayload;
 }
 
 const PATIENT_KEYS: Record<keyof PatientSummary, string[]> = {
@@ -342,6 +357,11 @@ export function parseRemoteState(raw: unknown, data?: unknown): RemoteState {
   const clinicianCaption = merged["clinicianTranscript"] ?? merged["clinician_transcript"];
   if (typeof clinicianCaption === "string") out.clinicianCaption = clinicianCaption;
 
+  const rawReplySeq = merged["replySeq"] ?? merged["reply_seq"];
+  if (typeof rawReplySeq === "number" && Number.isFinite(rawReplySeq)) {
+    out.replySeq = rawReplySeq;
+  }
+
   const p = { ...merged, ...asRecord(merged["patient"]) };
   const patient: Partial<PatientSummary> = {};
   (Object.keys(PATIENT_KEYS) as (keyof PatientSummary)[]).forEach((key) => {
@@ -358,18 +378,37 @@ export function parseRemoteState(raw: unknown, data?: unknown): RemoteState {
   if (rawPane && typeof rawPane["kind"] === "string") {
     const k = rawPane["kind"].trim().toLowerCase();
     const kind: CustomPaneKind =
-      k === "ward_table" || k === "ward_stats" ? k : "patient";
+      k === "ward_table" ||
+      k === "ward_stats" ||
+      k === "timetable" ||
+      k === "custom_html"
+        ? k
+        : "patient";
     out.customPane = {
       kind,
       title: typeof rawPane["title"] === "string" ? rawPane["title"] : "",
       subtitle: typeof rawPane["subtitle"] === "string" ? rawPane["subtitle"] : "",
       filterWing: typeof rawPane["filterWing"] === "string" ? rawPane["filterWing"] : "",
+      generatedHtml:
+        typeof rawPane["generatedHtml"] === "string" ? rawPane["generatedHtml"] : "",
     };
   }
 
   const rawHud = asRecord(merged["wardHud"] ?? merged["ward_hud"]);
   if (rawHud && Array.isArray(rawHud["patients"]) && asRecord(rawHud["stats"])) {
     out.wardHud = rawHud as unknown as WardHudData;
+  }
+
+  const rawExp = asRecord(merged["exportRequest"] ?? merged["export_request"]);
+  if (rawExp && typeof rawExp["id"] === "string" && typeof rawExp["format"] === "string") {
+    const f = rawExp["format"].toLowerCase();
+    if (f === "xlsx" || f === "png" || f === "both") {
+      out.exportRequest = {
+        id: rawExp["id"],
+        format: f,
+        kind: typeof rawExp["kind"] === "string" ? rawExp["kind"] : "patient",
+      };
+    }
   }
 
   return out;

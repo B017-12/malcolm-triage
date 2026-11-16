@@ -36,7 +36,9 @@ function ridgePath(i: number, t: number): string {
 
 /** Eight translucent full-height wave ribbons with 1px ridge highlights. Colors from CSS tokens. */
 export function WaveBackground() {
-  const { mode, bpm } = useMalcolm();
+  const { mode, bpm, customPane } = useMalcolm();
+  const isSpecificPatientVitals =
+    mode === "heart" || (mode === "patient" && (customPane?.kind || "patient") === "patient");
   const fills = useRef<(SVGPathElement | null)[]>([]);
   const ridges = useRef<(SVGPathElement | null)[]>([]);
 
@@ -62,7 +64,7 @@ export function WaveBackground() {
   return (
     <div
       aria-hidden
-      data-mode={mode === "idle" ? "idle" : "vitals"}
+      data-mode={isSpecificPatientVitals ? "vitals" : "idle"}
       className="mesh-base pointer-events-none absolute inset-0"
       style={{ ["--beat" as string]: `${beatPeriod(bpm)}s` }}
     >

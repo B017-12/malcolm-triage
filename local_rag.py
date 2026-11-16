@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import concurrent.futures
+from datetime import datetime, timedelta
 import json
 import os
 import re
 import socket
+import threading
 import time
 from typing import Any
 
@@ -339,12 +341,14 @@ def build_ward_hud_data(db: dict[str, Any] | None = None) -> dict[str, Any]:
             acuity = "Stable"
 
         room_raw = str(p.get("room", "Room 153"))
+        room_num = re.sub(r"^Room\s+", "", room_raw, flags=re.IGNORECASE).strip() or "153"
         wing = str(p.get("wing", "Wing A"))
+        wake_val = "Sleeping" if is_sleeping else "Awake"
         row = {
             "patientId": str(pid),
             "name": str(p.get("name", f"Patient {pid}")),
             "wing": wing,
-            "room": room_raw,
+            "room": room_num,
             "condition": str(p.get("condition", "Monitoring")),
             "department": str(p.get("department", "General Medicine")),
             "protocol": str(p.get("protocol", "Standard Protocol")),
@@ -352,11 +356,13 @@ def build_ward_hud_data(db: dict[str, Any] | None = None) -> dict[str, Any]:
             "baselineBpm": base_bpm,
             "waveState": wave,
             "rhythm": rhythm_label,
-            "wakeStatus": "Sleeping" if is_sleeping else "Awake",
+            "wakeState": wake_val,
+            "wakeStatus": wake_val,
             "acuity": acuity,
             "symptom": "; ".join(symptoms) if symptoms else "No acute symptoms reported",
             "nurseNote": " ".join(notes) if notes else "No comments from prior rounds",
             "nurseDispatched": dispatched,
+            "checkInActive": bool(p.get("check_in_active")),
         }
         rows.append(row)
         bpms.append(bpm)
@@ -376,13 +382,16 @@ def build_ward_hud_data(db: dict[str, Any] | None = None) -> dict[str, Any]:
             {
                 "wing": w_name,
                 "count": len(w_list),
+                "meanBpm": w_avg,
                 "avgBpm": w_avg,
-                "patients": ", ".join(f"{x['name']} ({x['bpm']} BPM)" for x in w_list),
+                "patients": [str(x["name"]) for x in w_list],
             }
         )
 
     min_bpm_val = int(min_row["bpm"]) if min_row else 64
     max_bpm_val = int(max_row["bpm"]) if max_row else 104
+    min_patient_str = f"{min_row['name']} ({min_row['patientId']})" if min_row else "Sanna Laine (1432)"
+    max_patient_str = f"{max_row['name']} ({max_row['patientId']})" if max_row else "Jukka Korhonen (1431)"
     summary_line = (
         f"Ward Mean HR: {mean_bpm} BPM (Range {min_bpm_val}–{max_bpm_val} BPM) • "
         f"{awake_count} Awake / {sleeping_count} Sleeping • "
@@ -394,9 +403,11 @@ def build_ward_hud_data(db: dict[str, Any] | None = None) -> dict[str, Any]:
             "totalPatients": len(rows),
             "meanBpm": mean_bpm,
             "minBpm": min_bpm_val,
-            "minPatient": f"{min_row['name']} ({min_row['patientId']})" if min_row else "Sanna Laine (1432)",
+            "minBpmPatient": min_patient_str,
+            "minPatient": min_patient_str,
             "maxBpm": max_bpm_val,
-            "maxPatient": f"{max_row['name']} ({max_row['patientId']})" if max_row else "Jukka Korhonen (1431)",
+            "maxBpmPatient": max_patient_str,
+            "maxPatient": max_patient_str,
             "bpmSpread": max_bpm_val - min_bpm_val,
             "awakeCount": awake_count,
             "sleepingCount": sleeping_count,
@@ -409,8 +420,446 @@ def build_ward_hud_data(db: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
+def _fmt_12h(dt: datetime) -> str:
+    """Format a datetime object as '4:30 PM' without leading zero."""
+    s = dt.strftime("%I:%M %p")
+    return s.lstrip("0") or s
+
+
+_SPOKEN_NUM_MAP: dict[str, str] = {
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "ten": "10",
+    "eleven": "11",
+    "twelve": "12",
+    "thirteen": "13",
+    "fourteen": "14",
+    "fifteen": "15",
+    "twenty": "20",
+    "twenty-five": "25",
+    "thirty": "30",
+    "forty": "40",
+    "forty-five": "45",
+    "fifty": "50",
+    "sixty": "60",
+}
+
+
+def _normalize_spoken_numbers(text: str) -> str:
+    """Replace spoken number words ('ten seconds', 'five minutes') with digits ('10 seconds', '5 minutes')."""
+    out = text.lower()
+    out = re.sub(r"\ba\s+(second|minute)\b", r"1 \1", out)
+    out = re.sub(r"\bhalf\s+a\s+minute\b", "30 seconds", out)
+    for word, digit in sorted(_SPOKEN_NUM_MAP.items(), key=lambda kv: -len(kv[0])):
+        out = re.sub(rf"\b{re.escape(word)}\b", digit, out)
+    return out
+
+
+def _parse_relative_delay_seconds(text: str) -> int | None:
+    """
+    Detect when the clinician asks to be paged or reminded in X seconds, X minutes, or immediately ('page me now').
+    Returns the exact delay in seconds (e.g. 10 for 'page me in 10 seconds'), or None if not a relative timer/page.
+    """
+    norm = _normalize_spoken_numbers(text)
+    if any(k in norm for k in ("time table", "timetable", "time-table", "clock out", "clock-out")):
+        return None
+
+    # 1. Explicit seconds ("page me in 10 seconds", "remind me in 15 sec", "for 10 seconds", "10 seconds from now")
+    m_sec = re.search(
+        r"\b(?:in|for|after)?\s*(\d{1,3})\s*(?:sec|secs|second|seconds)\b",
+        norm,
+    )
+    if m_sec:
+        return max(1, min(3600, int(m_sec.group(1))))
+
+    # 2. Immediate page test ("page me now", "page me right now", "test page", "test the paging system", "test loudspeaker")
+    if re.search(
+        r"\b(?:page\s+me\s+(?:right\s+)?now|test\s+(?:the\s+)?(?:loudspeaker|page|paging\s+system)|broadcast\s+a\s+page(?:\s+now)?)\b",
+        norm,
+    ):
+        return 2
+
+    # 3. Relative minutes ("page me in 1 minute", "remind me in 2 minutes") without "minutes before"
+    if not re.search(r"\b\d{1,2}\s*(?:min|minute)s?\s+before\b", norm):
+        m_min = re.search(
+            r"\b(?:in|for|after)\s+(\d{1,3})\s*(?:min|mins|minute|minutes)\b",
+            norm,
+        )
+        if m_min:
+            return max(1, min(180, int(m_min.group(1)))) * 60
+
+    return None
+
+
+def _is_timetable_or_calendar_query(text: str) -> bool:
+    """Return True when the clinician asks to create/view a timetable, schedule, calendar, or loudspeaker reminder."""
+    lowered = text.lower().strip()
+    if not lowered:
+        return False
+    if _parse_relative_delay_seconds(text) is not None:
+        return True
+    schedule_keywords = (
+        "time table",
+        "timetable",
+        "time-table",
+        "schedule",
+        "calendar",
+        "agenda",
+        "itinerary",
+        "shift plan",
+        "timings",
+        "clock out",
+        "clock-out",
+        "remind me",
+        "set a reminder",
+        "reminder",
+        "page me",
+        "loudspeaker",
+        "paging system",
+        "test page",
+    )
+    if any(kw in lowered for kw in schedule_keywords):
+        return True
+    if "surgery" in lowered and any(
+        k in lowered
+        for k in ("pm", "am", "at ", "before", "after", "then", "check in", "check-in", "table", "time")
+    ):
+        return True
+    return False
+
+
+def build_timetable_events(
+    text: str,
+    existing_events: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Construct or update chronological clinician timetable & calendar events synced to the PC's real clock.
+    Default loudspeaker reminder frequency is 5 minutes before each scheduled task, AND supports
+    exact second/minute countdown timers (e.g. 'page me in 10 seconds').
+    """
+    now = datetime.now()
+    today_date = now.date()
+    lowered = _normalize_spoken_numbers(text.strip())
+
+    # Detect custom reminder offset if explicitly stated (e.g. "remind me 10 minutes before"), default 5 min
+    reminder_mins = 5
+    m_rem = re.search(r"remind(?:er)?\s+(?:me\s+)?(\d{1,2})\s*(?:min|minute)s?\s+before", lowered)
+    if m_rem:
+        reminder_mins = max(1, min(60, int(m_rem.group(1))))
+
+    def _make_event(
+        idx: int,
+        start_dt: datetime,
+        end_dt: datetime | None,
+        title: str,
+        location: str,
+        category: str,
+        patient_id: str = "",
+        rem_mins: int = reminder_mins,
+    ) -> dict[str, Any]:
+        rem_dt = start_dt - timedelta(minutes=rem_mins)
+        disp_time = (
+            f"{_fmt_12h(start_dt)} – {_fmt_12h(end_dt)}"
+            if end_dt is not None
+            else _fmt_12h(start_dt)
+        )
+        return {
+            "id": f"evt_{idx}_{int(start_dt.timestamp()) % 100000}",
+            "start_time": start_dt.strftime("%H:%M"),
+            "end_time": end_dt.strftime("%H:%M") if end_dt else start_dt.strftime("%H:%M"),
+            "display_time": disp_time,
+            "scheduled_iso": start_dt.strftime("%Y-%m-%dT%H:%M:00"),
+            "reminder_minutes_before": rem_mins,
+            "reminder_time": rem_dt.strftime("%H:%M"),
+            "reminder_display": f"{_fmt_12h(rem_dt)} ({rem_mins}m prior)",
+            "title": title,
+            "location": location,
+            "category": category,
+            "patient_id": patient_id,
+            "paged_reminder": False,
+            "paged_start": False,
+            "status": "Scheduled",
+        }
+
+    # 1. Check if clinician is asking for a relative countdown page/reminder ("page me in 10 seconds", "remind me in 2 minutes")
+    delay_sec = _parse_relative_delay_seconds(text)
+    if delay_sec is not None:
+        fire_dt = now + timedelta(seconds=delay_sec)
+        fire_epoch = time.time() + float(delay_sec)
+        task_desc = "Attending Physician Loudspeaker Page"
+        loc = "Hospital PA / Ward Floor"
+        pid = ""
+        if "mika" in lowered or "1429" in lowered:
+            task_desc = "Patient Check-In — Mika Hämäläinen (Patient 1429)"
+            loc = "Wing A, Room 153"
+            pid = "1429"
+        elif "aino" in lowered or "1430" in lowered:
+            task_desc = "Patient Check-In — Aino Virtanen (Patient 1430)"
+            loc = "Wing B, Room 204"
+            pid = "1430"
+        elif "jukka" in lowered or "1431" in lowered:
+            task_desc = "Patient Check-In — Jukka Korhonen (Patient 1431)"
+            loc = "Wing C, Room 312"
+            pid = "1431"
+        elif "sanna" in lowered or "1432" in lowered:
+            task_desc = "Patient Check-In — Sanna Laine (Patient 1432)"
+            loc = "Wing A, Room 118"
+            pid = "1432"
+        elif "surgery" in lowered:
+            task_desc = "Scheduled Surgery Page"
+            loc = "Operating Room 2"
+
+        fire_clock_str = fire_dt.strftime("%I:%M:%S %p").lstrip("0")
+        delay_label = f"{delay_sec}s" if delay_sec < 120 else f"{delay_sec // 60}m"
+        current = list(existing_events or [])
+        new_evt = {
+            "id": f"evt_timer_{int(time.time() * 1000)}",
+            "start_time": fire_dt.strftime("%H:%M"),
+            "end_time": fire_dt.strftime("%H:%M"),
+            "display_time": fire_clock_str,
+            "scheduled_iso": fire_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+            "remind_at_epoch": fire_epoch,
+            "delay_seconds": delay_sec,
+            "reminder_minutes_before": 0,
+            "reminder_time": fire_dt.strftime("%H:%M"),
+            "reminder_display": f"In {delay_label} ({fire_clock_str})",
+            "title": task_desc,
+            "location": loc,
+            "category": "Loudspeaker Page",
+            "patient_id": pid,
+            "paged_reminder": False,
+            "paged_start": False,
+            "status": f"Armed ({delay_label} Timer)",
+        }
+        current.append(new_evt)
+        current.sort(key=lambda e: str(e.get("start_time", "00:00")))
+        return current
+
+    # 2. Parse anchor time (e.g. "5pm surgery", "17:00", "6:30 pm")
+    anchor_hour = 17
+    anchor_min = 0
+    m_time = re.search(
+        r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b",
+        lowered,
+    )
+    if m_time:
+        hr = int(m_time.group(1))
+        mn = int(m_time.group(2) or 0)
+        mer = m_time.group(3).lower().replace(".", "")
+        if mer == "pm" and hr < 12:
+            hr += 12
+        elif mer == "am" and hr == 12:
+            hr = 0
+        anchor_hour, anchor_min = hr, mn
+    else:
+        m_24 = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", lowered)
+        if m_24:
+            anchor_hour, anchor_min = int(m_24.group(1)), int(m_24.group(2))
+        elif "surgery" not in lowered and "5" not in lowered:
+            # Anchor to next 15-minute mark on the PC's real clock
+            rounded = now + timedelta(minutes=(15 - now.minute % 15) or 15)
+            anchor_hour, anchor_min = rounded.hour, rounded.minute
+
+    surgery_start = datetime(
+        today_date.year,
+        today_date.month,
+        today_date.day,
+        anchor_hour,
+        anchor_min,
+        0,
+    )
+    # Construct clean chronological timetable:
+    # 1) Pre-surgery check-in on Patient 1 (30 mins before surgery)
+    t1_start = surgery_start - timedelta(minutes=30)
+    t1_end = surgery_start - timedelta(minutes=10)
+    # 2) Surgery (60 mins)
+    t2_start = surgery_start
+    t2_end = surgery_start + timedelta(minutes=60)
+    # 3) Post-surgery check-in on Patient 2 (10 mins after surgery)
+    t3_start = t2_end + timedelta(minutes=10)
+    t3_end = t3_start + timedelta(minutes=20)
+    # 4) Final patient check-in on Patient 3 before clock-out
+    t4_start = t3_end + timedelta(minutes=5)
+    t4_end = t4_start + timedelta(minutes=20)
+    # 5) Shift wrap-up & Clock out
+    t5_start = t4_end + timedelta(minutes=5)
+
+    events = [
+        _make_event(
+            1,
+            t1_start,
+            t1_end,
+            "Patient Check-In — Mika Hämäläinen (Patient 1429)",
+            "Wing A, Room 153",
+            "Check-In",
+            patient_id="1429",
+        ),
+        _make_event(
+            2,
+            t2_start,
+            t2_end,
+            "Scheduled Surgery",
+            "Operating Room 2 (Surgical Suite)",
+            "Surgery",
+            patient_id="",
+        ),
+        _make_event(
+            3,
+            t3_start,
+            t3_end,
+            "Patient Check-In — Aino Virtanen (Patient 1430)",
+            "Wing B, Room 204",
+            "Check-In",
+            patient_id="1430",
+        ),
+        _make_event(
+            4,
+            t4_start,
+            t4_end,
+            "Patient Check-In — Jukka Korhonen (Patient 1431)",
+            "Wing C, Room 312",
+            "Check-In",
+            patient_id="1431",
+        ),
+        _make_event(
+            5,
+            t5_start,
+            None,
+            "Shift Handover & Clock Out",
+            "Attending Physician Station",
+            "Clock-Out",
+            patient_id="",
+        ),
+    ]
+    return events
+
+
+def render_timetable_html_css(events: list[dict[str, Any]] | None = None) -> str:
+    """Render a clean, dedicated HTML+CSS Timetable & Hospital Loudspeaker Pager View (no unrelated telemetry clutter)."""
+    now = datetime.now()
+    items = events if events is not None else state_manager.get_calendar_events()
+    if not items:
+        items = build_timetable_events("create a time table with a 5pm surgery")
+
+    rows_html = ""
+    for idx, ev in enumerate(items, start=1):
+        cat = str(ev.get("category", "Task"))
+        is_surg = cat.lower() == "surgery"
+        is_clockout = "clock" in cat.lower()
+        badge_bg = (
+            "rgba(244,63,94,0.18);color:#fda4af;border:1px solid rgba(244,63,94,0.45)"
+            if is_surg
+            else (
+                "rgba(16,185,129,0.16);color:#6ee7b7;border:1px solid rgba(16,185,129,0.4)"
+                if is_clockout
+                else "rgba(56,189,248,0.15);color:#38bdf8;border:1px solid rgba(56,189,248,0.4)"
+            )
+        )
+        pid = str(ev.get("patient_id", ""))
+        status_str = str(ev.get("status", "Scheduled"))
+        row_click = f"onclick=\"window.selectPatient('{pid}')\"" if pid else ""
+        rows_html += (
+            f"<tr style='border-bottom:1px solid rgba(255,255,255,0.09)'>"
+            f"<td style='padding:12px 14px;white-space:nowrap'>"
+            f"<div style='font-family:JetBrains Mono,monospace;font-size:14px;font-weight:600;color:#38bdf8'>{ev.get('display_time','')}</div>"
+            f"</td>"
+            f"<td style='padding:12px 14px' {row_click}>"
+            f"<div style='display:flex;align-items:center;gap:8px'>"
+            f"<span style='font-family:JetBrains Mono,monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.14em;padding:2px 7px;{badge_bg}'>{cat}</span>"
+            f"<span style='font-size:15px;font-weight:600;color:#ffffff'>{ev.get('title','')}</span>"
+            f"</div>"
+            f"</td>"
+            f"<td style='padding:12px 14px;font-family:JetBrains Mono,monospace;font-size:12px;color:#cbd5e1'>{ev.get('location','')}</td>"
+            f"<td style='padding:12px 14px;white-space:nowrap'>"
+            f"<div style='font-family:JetBrains Mono,monospace;font-size:12px;color:#fbbf24'>🔔 {ev.get('reminder_display','5m prior')}</div>"
+            f"<div style='font-family:JetBrains Mono,monospace;font-size:10px;color:#8b95a7;margin-top:2px'>Hospital PA Loudspeaker</div>"
+            f"</td>"
+            f"<td style='padding:12px 14px;text-align:right;white-space:nowrap;font-family:JetBrains Mono,monospace;font-size:11px;color:#6ee7b7'>"
+            f"{status_str}"
+            f"</td>"
+            f"</tr>"
+        )
+
+    return f"""<style>
+  .tt-bar {{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    background: rgba(56, 189, 248, 0.07);
+    padding: 10px 16px;
+  }}
+  .tt-clock {{
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: #38bdf8;
+    letter-spacing: 0.12em;
+  }}
+</style>
+<div class="hud-root">
+  <div>
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px">
+      <p class="hud-kicker">Attending Physician Schedule • Hospital PA Pager Armed</p>
+      <span class="tt-clock" id="hud-live-clock">PC CLOCK SYNCED: {_fmt_12h(now)} ({now.strftime('%Y-%m-%d')})</span>
+    </div>
+    <h2 class="hud-title">Clinician Shift Timetable &amp; Reminder Schedule</h2>
+  </div>
+
+  <div class="tt-bar">
+    <div class="hud-kicker" style="color:#e2e8f0">
+      ⏱ INTERNAL CLOCK: SYNCED TO PC REAL TIME • DEFAULT REMINDER FREQUENCY: <strong style="color:#fbbf24">5 MINUTES BEFORE TASK</strong>
+    </div>
+    <div class="hud-kicker" style="color:#38bdf8">
+      📢 PAGING OUTPUT: HOSPITAL LOUDSPEAKER (LAPTOP SPEAKER)
+    </div>
+  </div>
+
+  <table class="hud-table">
+    <thead>
+      <tr>
+        <th>Time Slot</th>
+        <th>Scheduled Task</th>
+        <th>Location / Room</th>
+        <th>Pager Reminder (T-5 Min)</th>
+        <th style="text-align:right">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {rows_html}
+    </tbody>
+  </table>
+
+  <div class="hud-footer">
+    <div>
+      <p class="hud-kicker" style="color:#fda4af">Hospital Loudspeaker Paging System Active</p>
+      <div style="margin-top:3px;font-size:13px;color:#f3f5f8">
+        Malcolm will automatically chime and page you over the hospital loudspeaker <strong>5 minutes before</strong> each scheduled task.
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  setInterval(function() {{
+    var el = document.getElementById("hud-live-clock");
+    if (el) {{
+      var d = new Date();
+      el.textContent = "PC CLOCK SYNCED: " + d.toLocaleTimeString([], {{hour: '2-digit', minute: '2-digit', second: '2-digit'}});
+    }}
+  }}, 1000);
+</script>"""
+
+
 def _detect_pane_intent(text: str) -> dict[str, Any] | None:
-    """Detect explicit clinician voice/text requests to construct a table, show statistics, or close the pane."""
+    """Detect clinician voice/text requests to construct an on-demand HTML/CSS pane (timetable, table, stats, custom view) or close it."""
     lowered = text.lower().strip()
     if not lowered:
         return None
@@ -418,7 +867,7 @@ def _detect_pane_intent(text: str) -> dict[str, Any] | None:
     # 1. Close / dismiss / hide pane requests
     close_patterns = (
         r"\b(?:close|hide|dismiss|remove|minimize|collapse|clear|shut|exit|turn\s+off|put\s+away)\b.*"
-        r"\b(?:pane|panel|table|chart|stats|statistics|display|screen|board|roster|sidebar|view|window|it|that)\b",
+        r"\b(?:pane|panel|table|timetable|schedule|chart|stats|statistics|display|screen|board|roster|sidebar|view|window|it|that)\b",
         r"\b(?:put|take)\s+(?:that|it|the\s+pane|the\s+table|the\s+display)\s+away\b",
         r"\bback\s+to\s+(?:main\s+screen|full\s*screen|idle|standby|circle)\b",
         r"^(?:close|hide|dismiss)\s*(?:pane|table|stats|display|it|that)?[.!?]*$",
@@ -426,7 +875,21 @@ def _detect_pane_intent(text: str) -> dict[str, Any] | None:
     if any(re.search(pat, lowered) for pat in close_patterns):
         return {"action": "close"}
 
-    # 2. Statistics / analytics / metrics pane requests
+    # Do not open a pane when the request is physically impossible/impractical (e.g. MRI, hologram, camera feed)
+    if _detect_impractical_request_fallback(text) is not None:
+        return None
+
+    # 2. Timetable / Schedule / Calendar / Reminder requests (MUST run before generic 'table' check!)
+    if _is_timetable_or_calendar_query(text):
+        return {
+            "action": "open",
+            "kind": "timetable",
+            "generate_html": True,
+            "title": "Clinician Shift Timetable & Reminder Schedule",
+            "subtitle": "Synced to Real PC Clock • 5-Min Prior Loudspeaker Paging",
+        }
+
+    # 2. Statistics / analytics / metrics / comparison chart pane requests
     stats_keywords = (
         "statistic",
         "statistics",
@@ -441,6 +904,11 @@ def _detect_pane_intent(text: str) -> dict[str, Any] | None:
         "heart rate distribution",
         "compare heart rates",
         "compare vitals",
+        "compare patients",
+        "comparison",
+        "bar chart",
+        "graph",
+        "plot",
         "ward numbers",
         "statistical",
         "breakdown of the ward",
@@ -452,18 +920,50 @@ def _detect_pane_intent(text: str) -> dict[str, Any] | None:
         return {
             "action": "open",
             "kind": "ward_stats",
+            "generate_html": True,
             "title": "Ward Telemetry & Acuity Statistics",
-            "subtitle": "Live Statistical Breakdown • 4 Monitored Patients",
+            "subtitle": "AI-Synthesized HTML/CSS Statistical View",
         }
 
-    # 3. Ward Table / All-patients roster pane requests
+    # 3. Ward Table / All-patients roster / Custom HTML display requests
     has_table_word = any(
         w in lowered
-        for w in ("table", "roster", "spreadsheet", "grid", "board", "matrix", "ledger")
+        for w in (
+            "table",
+            "roster",
+            "spreadsheet",
+            "grid",
+            "board",
+            "matrix",
+            "ledger",
+            "dashboard",
+            "columns",
+            "cards",
+            "timeline",
+            "schedule",
+        )
     )
     has_show_verb = any(
         v in lowered
-        for v in ("show", "display", "pull up", "bring up", "open", "create", "construct", "build", "make", "give me", "put up", "view", "see")
+        for v in (
+            "show",
+            "display",
+            "pull up",
+            "bring up",
+            "open",
+            "create",
+            "construct",
+            "build",
+            "make",
+            "generate",
+            "render",
+            "draw",
+            "design",
+            "give me",
+            "put up",
+            "view",
+            "see",
+        )
     )
     has_multi_target = any(
         t in lowered
@@ -482,27 +982,38 @@ def _detect_pane_intent(text: str) -> dict[str, Any] | None:
             "four patients",
             "all four",
             "wing a",
+            "wing b",
+            "wing c",
+            "awake patients",
+            "sleeping patients",
+            "symptoms",
+            "medications",
+            "protocols",
         )
     )
-    if has_table_word or (has_show_verb and has_multi_target):
+    if has_table_word or (has_show_verb and has_multi_target) or (
+        any(v in lowered for v in ("create", "construct", "build", "generate", "render", "design"))
+        and any(w in lowered for w in ("pane", "panel", "display", "view", "layout", "chart", "overview"))
+    ):
         filter_wing = ""
         title = "Active Ward Roster — All Monitored Patients"
-        subtitle = "Real-Time Multi-Patient EHR & Telemetry Matrix"
+        subtitle = "AI-Generated HTML/CSS Clinical Display"
         if "wing a" in lowered and "wing b" not in lowered and "wing c" not in lowered:
             filter_wing = "Wing A"
             title = "Wing A Patient Roster"
-            subtitle = "Filtered View • Wing A Beds (1429, 1432)"
+            subtitle = "AI-Generated HTML/CSS • Wing A Beds (1429, 1432)"
         elif "wing b" in lowered and "wing a" not in lowered:
             filter_wing = "Wing B"
             title = "Wing B Patient Roster"
-            subtitle = "Filtered View • Wing B Beds (1430)"
+            subtitle = "AI-Generated HTML/CSS • Wing B Beds (1430)"
         elif "wing c" in lowered and "wing a" not in lowered:
             filter_wing = "Wing C"
             title = "Wing C Patient Roster"
-            subtitle = "Filtered View • Wing C Beds (1431)"
+            subtitle = "AI-Generated HTML/CSS • Wing C Beds (1431)"
         return {
             "action": "open",
             "kind": "ward_table",
+            "generate_html": True,
             "title": title,
             "subtitle": subtitle,
             "filterWing": filter_wing,
@@ -513,11 +1024,71 @@ def _detect_pane_intent(text: str) -> dict[str, Any] | None:
         return {
             "action": "open",
             "kind": "patient",
+            "generate_html": False,
             "title": "",
             "subtitle": "",
         }
 
     return None
+
+
+def _detect_export_request(text: str, current_pane_kind: str = "patient") -> dict[str, str] | None:
+    """
+    Detect when the clinician asks Malcolm to generate, export, download, or save
+    an .xlsx (Excel spreadsheet) or .png (formatted plain-white image) file.
+    """
+    lowered = text.lower()
+    wants_xlsx = bool(
+        re.search(
+            r"\b(xlsx|xls|x\s*l\s*s\s*x|excel|spreadsheet\s+file|excel\s+sheet|excel\s+file)\b",
+            lowered,
+        )
+        or (
+            any(v in lowered for v in ("export", "download", "save"))
+            and "spreadsheet" in lowered
+        )
+    )
+    wants_png = bool(
+        re.search(
+            r"\b(png|p\s*n\s*g|p\s+and\s+g\s+file|image\s+file|picture\s+file|screenshot)\b",
+            lowered,
+        )
+        or (
+            any(v in lowered for v in ("export", "download", "save", "generate", "create", "make", "give me"))
+            and any(f in lowered for f in (".png", " png", "as an image", "as a picture", "as a png", "png file"))
+        )
+    )
+    has_generic_export_verb = bool(
+        re.search(r"\b(export|download)\b", lowered)
+        and any(
+            w in lowered
+            for w in ("file", "table", "timetable", "time table", "schedule", "summary", "stats", "statistics", "chart", "report", "it", "this")
+        )
+    )
+
+    if not (wants_xlsx or wants_png or has_generic_export_verb):
+        return None
+
+    if wants_xlsx and wants_png:
+        fmt = "both"
+    elif wants_png:
+        fmt = "png"
+    else:
+        fmt = "xlsx"
+
+    # Determine which view to export
+    if any(k in lowered for k in ("timetable", "time table", "time-table", "schedule", "calendar", "timings", "agenda")):
+        kind = "timetable"
+    elif any(k in lowered for k in ("statistic", "statistics", "stats", "analytics", "metrics")):
+        kind = "ward_stats"
+    elif any(k in lowered for k in ("ward table", "roster", "all patients", "four patients", "patient table")):
+        kind = "ward_table"
+    elif "table" in lowered and current_pane_kind == "patient":
+        kind = "ward_table"
+    else:
+        kind = current_pane_kind or "patient"
+
+    return {"format": fmt, "kind": kind}
 
 
 def _detect_impractical_request_fallback(text: str, state: dict[str, Any] | None = None) -> str | None:
@@ -1025,6 +1596,322 @@ class LocalRAGAgent:
 
         return None, last_reason
 
+    def _query_gemini_html(
+        self,
+        system_instruction: str,
+        user_prompt: str,
+        state: dict[str, Any] | None = None,
+    ) -> tuple[str | None, str]:
+        """
+        Query Gemini 3.5 Flash-Lite with MINIMAL thinking to synthesize raw HTML & CSS
+        for the right-hand split-screen HUD pane (preserving CSS '#', '*', and markup tags,
+        while still applying strict PII pseudonymization and local re-hydration).
+        """
+        if not self.is_cloud_configured():
+            return None, "Local Deterministic HTML/CSS Fallback"
+        if time.time() < self._cloud_backoff_until:
+            return None, "Local Deterministic HTML/CSS Fallback (Circuit Breaker)"
+
+        cloud_model = self._resolve_cloud_model()
+        models_to_try = [cloud_model]
+        for candidate in ("gemini-3.5-flash-lite", "gemini-3-flash-preview", "gemini-3.5-flash"):
+            if candidate not in models_to_try:
+                models_to_try.append(candidate)
+
+        masked_system = mask_pii(system_instruction, state)
+        masked_prompt = mask_pii(user_prompt, state)
+        headers = {"Content-Type": "application/json"}
+
+        for idx, model_id in enumerate(models_to_try):
+            gen_config: dict[str, Any] = {
+                "temperature": 0.2,
+                "maxOutputTokens": 1100,
+            }
+            if model_id in {
+                "gemini-3.5-flash-lite",
+                "gemini-3-flash-preview",
+                "gemini-3.1-flash-lite",
+                "gemini-3.1-flash-lite-preview",
+            }:
+                gen_config["thinkingConfig"] = {"thinkingLevel": "MINIMAL"}
+            elif model_id == "gemini-3.5-flash":
+                gen_config["thinkingConfig"] = {"thinkingBudget": 0}
+            payload = {
+                "systemInstruction": {"parts": [{"text": masked_system}]},
+                "contents": [{"role": "user", "parts": [{"text": masked_prompt}]}],
+                "generationConfig": gen_config,
+            }
+            endpoint = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model_id}:generateContent?key={self.api_key}"
+            )
+            timeout = (3.5, 6.5) if idx == 0 else (3.0, 5.5)
+            try:
+                resp = self._http.post(
+                    endpoint,
+                    headers=headers,
+                    json=payload,
+                    timeout=timeout,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates") or []
+                    parts = ((candidates[0].get("content") or {}).get("parts") or []) if candidates else []
+                    raw_html = "".join(
+                        str(p.get("text", ""))
+                        for p in parts
+                        if not p.get("thought")
+                    ).strip()
+                    # Strip markdown code fences if the model wrapped the HTML
+                    raw_html = re.sub(r"^```(?:html|css)?\s*", "", raw_html, flags=re.IGNORECASE)
+                    raw_html = re.sub(r"\s*```$", "", raw_html).strip()
+                    if raw_html and "<" in raw_html and ">" in raw_html:
+                        return unmask_pii(raw_html, state), f"Gemini {model_id} HTML/CSS Engine"
+                    continue
+                if resp.status_code in {401, 403}:
+                    self._cloud_backoff_until = time.time() + 15.0
+                    return None, f"Local Deterministic HTML/CSS Fallback (HTTP {resp.status_code})"
+                continue
+            except Exception:
+                continue
+
+        return None, "Local Deterministic HTML/CSS Fallback"
+
+    def _build_fallback_pane_html_css(
+        self,
+        clinician_request: str,
+        db: dict[str, Any] | None = None,
+    ) -> str:
+        """Construct a deterministic HTML+CSS HUD view from patients_db.json when offline."""
+        if _is_timetable_or_calendar_query(clinician_request):
+            return render_timetable_html_css()
+        hud = build_ward_hud_data(db)
+        patients = hud.get("patients") or []
+        stats = hud.get("stats") or {}
+        lowered = clinician_request.lower()
+
+        is_stats = any(
+            k in lowered
+            for k in ("stat", "metric", "analytic", "average", "mean", "compare", "distribution", "chart", "graph")
+        )
+        style_block = """<style>
+  .hud-root {
+    height: 100%;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 18px 28px 22px 28px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 14px;
+    color: #f3f5f8;
+    font-family: 'Inter', system-ui, sans-serif;
+    overflow: hidden;
+  }
+  .hud-kicker {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: #8b95a7;
+    margin: 0;
+  }
+  .hud-title {
+    font-size: clamp(1.5rem, 2.6vw, 2.35rem);
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    margin: 4px 0 0 0;
+    color: #ffffff;
+  }
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  .kpi-card {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.025);
+    padding: 12px 14px;
+  }
+  .kpi-val {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 1.35rem;
+    font-weight: 600;
+    color: #38bdf8;
+    margin: 6px 0 2px 0;
+  }
+  .kpi-val.alert { color: #fb7185; }
+  .kpi-sub { font-size: 11px; color: #8b95a7; margin: 0; }
+  .hud-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    font-size: 13px;
+  }
+  .hud-table th {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: #8b95a7;
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .hud-table td {
+    padding: 11px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    vertical-align: top;
+  }
+  .hud-table tr:hover {
+    background: rgba(56, 189, 248, 0.07);
+    cursor: pointer;
+  }
+  .bpm-pill {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    color: #38bdf8;
+  }
+  .bpm-pill.high { color: #fb7185; }
+  .bar-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 9px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.02);
+    cursor: pointer;
+  }
+  .bar-track {
+    flex: 1;
+    height: 10px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+  }
+  .bar-fill { height: 100%; background: #38bdf8; }
+  .bar-fill.high { background: #f43f5e; }
+  .hud-footer {
+    border-top: 2px solid #f43f5e;
+    background: rgba(244, 63, 94, 0.14);
+    padding: 12px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+</style>"""
+
+        if is_stats:
+            bars_html = ""
+            for p in patients:
+                pct = max(12, min(100, int(((int(p["bpm"]) - 40) / 100.0) * 100)))
+                high_cls = "high" if int(p["bpm"]) >= 100 else ""
+                bars_html += (
+                    f"<div class='bar-row' onclick=\"window.selectPatient('{p['patientId']}')\">"
+                    f"<div style='width:190px'><div style='font-weight:600'>#{p['patientId']} {p['name']}</div>"
+                    f"<div class='hud-kicker' style='font-size:10px'>{p['wing']} • Rm {p['room']} • {p['condition']}</div></div>"
+                    f"<div class='bar-track'><div class='bar-fill {high_cls}' style='width:{pct}%'></div></div>"
+                    f"<div class='bpm-pill {high_cls}' style='width:95px;text-align:right'>{p['bpm']} BPM</div>"
+                    f"</div>"
+                )
+            return (
+                style_block
+                + f"""<div class="hud-root">
+  <div>
+    <p class="hud-kicker">AI-Synthesized Telemetry Analytics • Live Ward Feed</p>
+    <h2 class="hud-title">Ward Telemetry &amp; Acuity Statistics</h2>
+  </div>
+  <div class="kpi-grid">
+    <div class="kpi-card"><p class="hud-kicker">Mean Heart Rate</p><p class="kpi-val">{stats.get('meanBpm', 83.5)} BPM</p><p class="kpi-sub">4 Active Monitored Beds</p></div>
+    <div class="kpi-card"><p class="hud-kicker">BPM Range</p><p class="kpi-val">{stats.get('minBpm', 64)}–{stats.get('maxBpm', 104)} BPM</p><p class="kpi-sub">Spread Δ {stats.get('bpmSpread', 40)} BPM</p></div>
+    <div class="kpi-card"><p class="hud-kicker">Wake / Sleep</p><p class="kpi-val">{stats.get('awakeCount', 3)} Awake / {stats.get('sleepingCount', 1)} Sleep</p><p class="kpi-sub">Live ECG Wave Lock</p></div>
+    <div class="kpi-card"><p class="hud-kicker">Acuity Alerts</p><p class="kpi-val alert">{stats.get('tachycardiaCount', 1)} Tachycardia</p><p class="kpi-sub">{stats.get('symptomaticCount', 3)} Symptomatic</p></div>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px">{bars_html}</div>
+  <div class="hud-footer">
+    <div><p class="hud-kicker" style="color:#fda4af">Priority Statistical Outlier</p><div style="margin-top:3px;font-size:14px">Peak HR: <strong>{stats.get('maxBpmPatient', 'Jukka Korhonen (1431)')}</strong> at <strong>{stats.get('maxBpm', 104)} BPM</strong> • Lowest HR: <strong>{stats.get('minBpmPatient', 'Sanna Laine (1432)')}</strong> at <strong>{stats.get('minBpm', 64)} BPM</strong></div></div>
+  </div>
+</div>"""
+            )
+
+        rows_html = ""
+        for p in patients:
+            high_cls = "high" if int(p["bpm"]) >= 100 else ""
+            rows_html += (
+                f"<tr onclick=\"window.selectPatient('{p['patientId']}')\">"
+                f"<td><div class='hud-kicker'>#{p['patientId']}</div><div style='font-weight:600;font-size:15px;margin-top:2px'>{p['name']}</div></td>"
+                f"<td><div class='hud-kicker' style='color:#e2e8f0'>{p['wing']}</div><div style='font-size:12px;color:#8b95a7;margin-top:2px'>Room {p['room']}</div></td>"
+                f"<td><div style='font-weight:500'>{p['department']}</div><div style='font-size:12px;color:#8b95a7;margin-top:2px'>{p['protocol']}</div></td>"
+                f"<td><div class='bpm-pill {high_cls}'>{p['bpm']} BPM</div><div class='hud-kicker' style='font-size:10px;margin-top:2px'>{p['wakeState']} • {p['rhythm']}</div></td>"
+                f"<td><div style='font-size:12px;color:#f1f5f9'>{p['symptom']}</div><div style='font-size:11px;color:#8b95a7;margin-top:3px'>{p['nurseNote']}</div></td>"
+                f"</tr>"
+            )
+        return (
+            style_block
+            + f"""<div class="hud-root">
+  <div>
+    <p class="hud-kicker">On-Demand AI-Constructed HTML/CSS View</p>
+    <h2 class="hud-title">Active Ward Roster — All Monitored Patients</h2>
+  </div>
+  <table class="hud-table">
+    <thead>
+      <tr><th>Patient</th><th>Location</th><th>Department &amp; Protocol</th><th>Live Telemetry</th><th>Symptoms &amp; Nursing Notes</th></tr>
+    </thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+  <div class="hud-footer">
+    <div><p class="hud-kicker" style="color:#fda4af">Ward Summary</p><div style="margin-top:3px;font-size:14px">{stats.get('summaryLine', '')}</div></div>
+    <span class="hud-kicker">Click any patient row to inspect chart</span>
+  </div>
+</div>"""
+        )
+
+    def generate_pane_html_css(
+        self,
+        clinician_request: str,
+        db: dict[str, Any] | None = None,
+    ) -> str:
+        """
+        Real-time Generative UI: Ask Gemini 3.5 Flash-Lite to construct bespoke HTML & CSS
+        (<style>...</style><div class="hud-root">...</div>) on demand for whatever the clinician asked.
+        """
+        if _is_timetable_or_calendar_query(clinician_request):
+            return render_timetable_html_css()
+        data = db if isinstance(db, dict) else state_manager.load_db()
+        all_context = build_all_patients_rag_context()
+        ward_hud = build_ward_hud_data(data)
+        stats = ward_hud.get("stats") or {}
+
+        sys_prompt = (
+            "You are Malcolm's real-time Generative UI Engine for a hospital clinical HUD console. "
+            "Construct raw, compact HTML and CSS (<style>...</style> followed by <div class=\"hud-root\">...</div>) "
+            "that immediately renders whatever visual display, table, bar chart, statistical breakdown, comparison matrix, or dashboard the doctor asked for.\n\n"
+            "PRE-LOADED BASE CLASSES (already styled in the host frame—use them directly and only write <style> for custom additions!):\n"
+            "- `.hud-root`: full-height flex column container\n"
+            "- `.hud-kicker`: uppercase monospace label (11px, #8b95a7)\n"
+            "- `.hud-title`: crisp display heading\n"
+            "- `.kpi-grid` (4-col grid), `.kpi-card`, `.kpi-val` (cyan metric, add `.alert` for rose), `.kpi-sub`\n"
+            "- `.hud-table` (styled clinical table with `th`/`td` and hover highlight), `.bpm-pill` (add `.high` for >=100 BPM rose alert)\n"
+            "- `.bar-row`, `.bar-track`, `.bar-fill` (proportional horizontal bar chart, add `.high` for rose alert)\n"
+            "- `.hud-footer`: rose-tinted bottom summary banner\n\n"
+            "STRICT RULES:\n"
+            "1. Output ONLY a short `<style>...</style>` block (for custom classes/layout, max 12 lines) followed by `<div class=\"hud-root\">...</div>`. No markdown fences, no <html>/<head>/<body>.\n"
+            "2. Keep HTML concise and clean so it generates in under 1 second and fits on one screen without scrolling.\n"
+            "3. Interactive Hooks: Add `onclick=\"window.selectPatient('1429')\"` (or '1430', '1431', '1432') on patient rows/cards/bars.\n"
+            "4. Clinical Accuracy: Use ONLY the pseudonymized patient tokens ([PATIENT_1429], [PATIENT_1430], [PATIENT_1431], [PATIENT_1432]) and exact numbers below.\n\n"
+            f"Multi-Patient Ward Database:\n{all_context}\n\n"
+            f"Computed Ward Statistics:\n"
+            f"- Total: {stats.get('totalPatients', 4)} patients | Mean HR: {stats.get('meanBpm', 83.5)} BPM | Range: {stats.get('minBpm', 64)}–{stats.get('maxBpm', 104)} BPM (Spread {stats.get('bpmSpread', 40)} BPM)\n"
+            f"- Min HR: [PATIENT_1432] (64 BPM, Sleeping) | Max HR: [PATIENT_1431] (104 BPM, Mild Sinus Tachycardia)\n"
+            f"- Wakefulness: {stats.get('awakeCount', 3)} Awake / {stats.get('sleepingCount', 1)} Sleeping | Symptomatic: {stats.get('symptomaticCount', 3)} | Tachycardia: {stats.get('tachycardiaCount', 1)}\n"
+            f"- Wings: Wing A (2 beds, mean 77.0 BPM), Wing B (1 bed, mean 76.0 BPM), Wing C (1 bed, mean 104.0 BPM)"
+        )
+        user_msg = f"Construct the HTML and CSS display for this doctor request: {clinician_request}"
+        generated_html, _ = self._query_gemini_html(sys_prompt, user_msg)
+        if generated_html and "<div" in generated_html.lower():
+            return generated_html
+        return self._build_fallback_pane_html_css(clinician_request, data)
+
     def _query_gemini_with_rescore(
         self,
         system_instruction: str,
@@ -1042,19 +1929,24 @@ class LocalRAGAgent:
         clean_input = user_prompt.strip()
         self._last_pane_directive = "keep"
         rescore_directive = (
-            "\n\nHUD PANE CONTROL & IMPRACTICAL/IMPOSSIBLE REQUEST RULES:\n"
-            "1. ON-DEMAND DISPLAY PANE: You directly control the right-hand split-screen HUD pane on the doctor's console.\n"
-            "   - Choose PANE: ward_table when the doctor asks to see a table, roster, grid, board, or list of all patients.\n"
-            "   - Choose PANE: ward_stats when the doctor asks for statistics, metrics, analytics, averages, or a vitals comparison.\n"
-            "   - Choose PANE: patient_1429 (or patient_1430, patient_1431, patient_1432) when the doctor asks to pull up or view a specific patient's chart/pane.\n"
+            "\n\nHUD PANE CONTROL, FILE EXPORT (.XLSX / .PNG) & IMPRACTICAL/IMPOSSIBLE REQUEST RULES:\n"
+            "1. ON-DEMAND GENERATIVE HTML+CSS DISPLAY PANE & .XLSX / .PNG FILE EXPORT: You directly control a real-time Generative HTML+CSS HUD pane on the right side of the doctor's screen, "
+            "AND you HAVE built-in .xlsx (Excel spreadsheet) and .png (high-resolution formatted image on a plain white background) file generation and export capabilities! "
+            "You CAN construct and render any HTML/CSS table, shift timetable, bar chart, heart-rate graph, statistical breakdown, or custom dashboard on demand, "
+            "AND you CAN generate, export, and download formatted .xlsx or .png files of any table, timetable, statistics view, or patient summary on a plain white background! "
+            "NEVER say a bar chart, table, visual display, .xlsx file, Excel export, or .png image export is beyond your console capabilities—always confirm that you have just generated it and started the .xlsx or .png download right now.\n"
+            "   - Choose PANE: ward_table when the doctor asks to see a table, roster, grid, board, or list of patients.\n"
+            "   - Choose PANE: ward_stats when the doctor asks for statistics, metrics, analytics, averages, bar charts, graphs, or a vitals comparison.\n"
+            "   - Choose PANE: custom_html when the doctor asks to create, build, or display any other custom visual layout/matrix/comparison on the pane.\n"
+            "   - Choose PANE: patient_1429 (or patient_1430, patient_1431, patient_1432) when the doctor asks to pull up or view a single patient's standard chart.\n"
             "   - Choose PANE: close when the doctor asks to close, hide, dismiss, or put away the pane/table/stats.\n"
             "   - Choose PANE: keep otherwise.\n"
-            "2. IMPRACTICAL OR IMPOSSIBLE REQUESTS & PROACTIVE ALTERNATIVES: If the doctor asks you to do something impractical, "
-            "physically impossible for a digital AI, or unavailable in our telemetry/EHR system (e.g., physically drawing blood, "
-            "administering IV meds, performing surgery, showing a 3D hologram/MRI/CT/X-ray/video camera feed, waking the entire ward at once, "
+            "2. IMPRACTICAL OR IMPOSSIBLE REQUESTS & PROACTIVE ALTERNATIVES: If the doctor asks you to do something genuinely impractical, "
+            "physically impossible for a software AI, or unavailable in our telemetry/EHR system (e.g., physically drawing blood, "
+            "administering IV meds, performing surgery, showing an MRI/CT/X-ray scan, streaming a live room video camera feed, projecting a 3D hologram in mid-air, waking the entire ward at once, "
             "or making coffee/food), casually and good-naturedly tell the doctor that that's impractical or not something you can pull off from the console. "
-            "Then immediately ask if a practical alternative you CAN do right now (such as pulling up the live 4-patient ward table, "
-            "displaying ward telemetry statistics, opening a patient's chart, or dispatching a floor nurse to handle it) would work instead.\n\n"
+            "Then immediately ask if a practical alternative you CAN do right now (such as generating a live 4-patient ward table, "
+            "displaying ward telemetry statistics and bar charts, opening a patient's chart, or dispatching a floor nurse to handle it) would work instead.\n\n"
             "IMPORTANT — PASS-2 CONTEXTUAL STT RESCORING + RESPONSE FORMAT:\n"
             "The doctor's input comes from live hospital Speech-to-Text and may have clipped opening words, "
             "spoken hesitations ('er', 'uh', 'um'), homophones ('wing see' -> 'Wing C', 'cardia' -> 'tachycardia', "
@@ -1062,7 +1954,7 @@ class LocalRAGAgent:
             "('Aham linen' / 'Hama linen' -> [PATIENT_1429], 'Jukka' -> [PATIENT_1431], 'Aino' -> [PATIENT_1430], 'Sanna' -> [PATIENT_1432]).\n"
             "Output EXACTLY three labeled sections:\n"
             "TRANSCRIPT: <the doctor's intended utterance, grammar/homophones repaired, filler words removed, and properly punctuated>\n"
-            "PANE: <keep | close | ward_table | ward_stats | patient_1429 | patient_1430 | patient_1431 | patient_1432>\n"
+            "PANE: <keep | close | ward_table | ward_stats | custom_html | patient_1429 | patient_1430 | patient_1431 | patient_1432>\n"
             "REPLY: <your 1 to 3 sentence Jarvis clinical response>"
         )
         raw_out, engine_used = self._query_gemini(
@@ -1074,7 +1966,7 @@ class LocalRAGAgent:
             return clean_input, None, engine_used
 
         m_pane = re.search(
-            r"PANE:\s*(keep|close|ward_table|ward_stats|patient_1429|patient_1430|patient_1431|patient_1432)",
+            r"PANE:\s*(keep|close|ward_table|ward_stats|custom_html|patient_1429|patient_1430|patient_1431|patient_1432)",
             raw_out,
             flags=re.IGNORECASE,
         )
@@ -1094,14 +1986,14 @@ class LocalRAGAgent:
         if m_rep:
             reply_text = m_rep.group(1).strip()
             reply_text = re.sub(
-                r"\bPANE:\s*(?:keep|close|ward_table|ward_stats|patient_\d+)\b",
+                r"\bPANE:\s*(?:keep|close|ward_table|ward_stats|custom_html|patient_\d+)\b",
                 "",
                 reply_text,
                 flags=re.IGNORECASE,
             ).strip()
             rescored = m_tr.group(1).strip().strip('"').strip("'") if m_tr else clean_input
             rescored = re.sub(
-                r"\bPANE:\s*(?:keep|close|ward_table|ward_stats|patient_\d+)\b",
+                r"\bPANE:\s*(?:keep|close|ward_table|ward_stats|custom_html|patient_\d+)\b",
                 "",
                 rescored,
                 flags=re.IGNORECASE,
@@ -1114,7 +2006,7 @@ class LocalRAGAgent:
         # Fallback if model omitted labels
         stripped = re.sub(r"^TRANSCRIPT:\s*", "", raw_out, flags=re.IGNORECASE).strip()
         stripped = re.sub(
-            r"\bPANE:\s*(?:keep|close|ward_table|ward_stats|patient_\d+)\b",
+            r"\bPANE:\s*(?:keep|close|ward_table|ward_stats|custom_html|patient_\d+)\b",
             "",
             stripped,
             flags=re.IGNORECASE,
@@ -1127,8 +2019,9 @@ class LocalRAGAgent:
         pane_intent: dict[str, Any] | None,
         target_id: str | None,
         current_state: dict[str, Any],
+        generated_html: str = "",
     ) -> dict[str, Any]:
-        """Compute ui_mode and custom_pane updates from deterministic pane_intent + Gemini PANE directive."""
+        """Compute ui_mode and custom_pane updates from deterministic pane_intent + Gemini PANE directive + AI-generated HTML/CSS."""
         updates: dict[str, Any] = {}
         directive = (self._last_pane_directive or "keep").lower()
 
@@ -1142,16 +2035,23 @@ class LocalRAGAgent:
                     "title": "",
                     "subtitle": "",
                     "filterWing": "",
+                    "generatedHtml": "",
                 }
                 return updates
             if action == "open":
                 kind = str(pane_intent.get("kind", "patient"))
+                html_code = (
+                    generated_html
+                    if generated_html
+                    else (self._build_fallback_pane_html_css(text) if pane_intent.get("generate_html") else "")
+                )
                 updates["ui_mode"] = "patient_stats"
                 updates["custom_pane"] = {
                     "kind": kind,
                     "title": str(pane_intent.get("title", "")),
                     "subtitle": str(pane_intent.get("subtitle", "")),
                     "filterWing": str(pane_intent.get("filterWing", "")),
+                    "generatedHtml": html_code,
                 }
                 return updates
 
@@ -1163,24 +2063,40 @@ class LocalRAGAgent:
                 "title": "",
                 "subtitle": "",
                 "filterWing": "",
+                "generatedHtml": "",
             }
             return updates
         if directive == "ward_table":
+            html_code = generated_html or self.generate_pane_html_css(text)
             updates["ui_mode"] = "patient_stats"
             updates["custom_pane"] = {
                 "kind": "ward_table",
                 "title": "Active Ward Roster — All Monitored Patients",
-                "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
+                "subtitle": "AI-Generated HTML/CSS Clinical Display",
                 "filterWing": "",
+                "generatedHtml": html_code,
             }
             return updates
         if directive == "ward_stats":
+            html_code = generated_html or self.generate_pane_html_css(text)
             updates["ui_mode"] = "patient_stats"
             updates["custom_pane"] = {
                 "kind": "ward_stats",
                 "title": "Ward Telemetry & Acuity Statistics",
-                "subtitle": "Live Statistical Breakdown • 4 Monitored Patients",
+                "subtitle": "AI-Synthesized HTML/CSS Statistical View",
                 "filterWing": "",
+                "generatedHtml": html_code,
+            }
+            return updates
+        if directive == "custom_html":
+            html_code = generated_html or self.generate_pane_html_css(text)
+            updates["ui_mode"] = "patient_stats"
+            updates["custom_pane"] = {
+                "kind": "custom_html",
+                "title": "AI-Synthesized Clinical View",
+                "subtitle": "Custom Generative HTML & CSS Display",
+                "filterWing": "",
+                "generatedHtml": html_code,
             }
             return updates
         if directive.startswith("patient_"):
@@ -1190,6 +2106,7 @@ class LocalRAGAgent:
                 "title": "",
                 "subtitle": "",
                 "filterWing": "",
+                "generatedHtml": "",
             }
             return updates
 
@@ -1201,6 +2118,7 @@ class LocalRAGAgent:
                 "title": "",
                 "subtitle": "",
                 "filterWing": "",
+                "generatedHtml": "",
             }
         return updates
 
@@ -1671,11 +2589,210 @@ class LocalRAGAgent:
                 "state": state_manager.load_state(active_id),
             }
 
+        # 0.2. Explicit .xlsx / .png file generation & export requests
+        current_state_for_exp = state_manager.load_state(active_id)
+        current_pane_kind = str((current_state_for_exp.get("custom_pane") or {}).get("kind") or "patient")
+        export_req = _detect_export_request(text, current_pane_kind=current_pane_kind)
+        if export_req:
+            fmt = export_req["format"]
+            exp_kind = export_req["kind"]
+            if exp_kind == "timetable" or _is_timetable_or_calendar_query(text):
+                exp_kind = "timetable"
+                existing_events = state_manager.get_calendar_events()
+                events = (
+                    build_timetable_events(text, existing_events)
+                    if _is_timetable_or_calendar_query(text) or not existing_events
+                    else existing_events
+                )
+                state_manager.set_calendar_events(events)
+                pane_obj = {
+                    "kind": "timetable",
+                    "title": "Clinician Shift Timetable & Reminder Schedule",
+                    "subtitle": "Synced to Real PC Clock • 5-Min Prior Loudspeaker Paging",
+                    "filterWing": "",
+                    "generatedHtml": render_timetable_html_css(events),
+                }
+            elif exp_kind == "ward_stats":
+                pane_obj = {
+                    "kind": "ward_stats",
+                    "title": "Ward Telemetry & Acuity Statistics",
+                    "subtitle": "AI-Synthesized HTML/CSS Statistical View",
+                    "filterWing": "",
+                    "generatedHtml": self._build_fallback_pane_html_css("ward statistics", db),
+                }
+            elif exp_kind == "ward_table":
+                pane_obj = {
+                    "kind": "ward_table",
+                    "title": "Active Ward Roster — All Monitored Patients",
+                    "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
+                    "filterWing": "",
+                    "generatedHtml": self._build_fallback_pane_html_css("ward table", db),
+                }
+            else:
+                pane_obj = current_state_for_exp.get("custom_pane") or {
+                    "kind": "patient",
+                    "title": "",
+                    "subtitle": "",
+                    "filterWing": "",
+                    "generatedHtml": "",
+                }
+
+            fmt_label = (
+                "Excel (.xlsx) and PNG (.png) files"
+                if fmt == "both"
+                else ("Excel (.xlsx) spreadsheet" if fmt == "xlsx" else "high-resolution PNG (.png) image")
+            )
+            kind_label = {
+                "timetable": "clinician shift timetable",
+                "ward_stats": "ward telemetry statistics summary",
+                "ward_table": "4-patient ward roster table",
+                "patient": f"clinical summary for {current_state_for_exp.get('name', 'the active patient')}",
+            }.get(exp_kind, "clinical table")
+
+            reply = (
+                f"Right away, doctor. I've generated the formatted {fmt_label} of the {kind_label} "
+                "on a clean plain white background and started your download now."
+            )
+            telemetry = self._get_telemetry_for_state(current_state_for_exp)
+            panel = self.synthesize_patient_panel(current_state_for_exp, telemetry)
+            export_trigger = {
+                "id": f"exp_{int(time.time() * 1000)}",
+                "format": fmt,
+                "kind": exp_kind,
+            }
+            self._record_clinician_turn(text, reply)
+            updated = state_manager.update_state(
+                {
+                    "ui_mode": "patient_stats",
+                    "custom_pane": pane_obj,
+                    "export_request": export_trigger,
+                    "last_clinician_input": text,
+                    "last_transcript": reply,
+                    "patient_panel": panel,
+                },
+                patient_id=active_id,
+            )
+            return {
+                "reply": reply,
+                "engine": self.get_engine_label(),
+                "stage": updated.get("conversation_stage", "idle"),
+                "check_in_active": bool(updated.get("check_in_active")),
+                "export_request": export_trigger,
+                "state": state_manager.load_state(active_id),
+            }
+
+        # 0.5. Timetable / Schedule / Calendar / Loudspeaker Pager Reminder requests
+        if _is_timetable_or_calendar_query(text):
+            existing_events = state_manager.get_calendar_events()
+            events = build_timetable_events(text, existing_events)
+            state_manager.set_calendar_events(events)
+            tt_html = render_timetable_html_css(events)
+
+            state = state_manager.load_state(active_id)
+            telemetry = self._get_telemetry_for_state(state)
+            panel = self.synthesize_patient_panel(state, telemetry)
+
+            delay_sec = _parse_relative_delay_seconds(text)
+            if delay_sec is not None:
+                fire_dt = datetime.now() + timedelta(seconds=delay_sec)
+                fire_str = fire_dt.strftime("%I:%M:%S %p").lstrip("0")
+                if delay_sec <= 3:
+                    reply = "Right away, doctor. Broadcasting your hospital loudspeaker page now."
+                elif delay_sec < 120:
+                    reply = (
+                        f"Right away, doctor. I've armed the hospital loudspeaker paging system "
+                        f"to page you in {delay_sec} seconds at {fire_str}—stand by."
+                    )
+                else:
+                    mins = delay_sec // 60
+                    reply = (
+                        f"Right away, doctor. I've armed the hospital loudspeaker paging system "
+                        f"to page you in {mins} minute{'s' if mins != 1 else ''} at {_fmt_12h(fire_dt)}."
+                    )
+                engine_used = self.get_engine_label()
+                rescored_q = text
+            else:
+                now_str = _fmt_12h(datetime.now())
+                slot_summaries = [
+                    f"{ev.get('display_time')}: {ev.get('title')} ({ev.get('location')}, loudspeaker page at {ev.get('reminder_display')})"
+                    for ev in events
+                ]
+                fallback_tt_reply = (
+                    f"I've constructed your shift timetable on the right-hand pane, synced to the system clock ({now_str}). "
+                    f"Your schedule is set as follows: {'; '.join(slot_summaries[:4])}"
+                    + (f"; followed by {slot_summaries[4]}." if len(slot_summaries) > 4 else ".")
+                    + " Hospital loudspeaker paging is armed for 5 minutes before each scheduled task."
+                )
+                sys_tt = (
+                    "You are Malcolm, the attending physician's Jarvis-style clinical chief-of-staff AI. "
+                    "The doctor just asked you to create or update their shift timetable / calendar reminder schedule. "
+                    "Speak in 2 to 3 crisp spoken sentences (no markdown or bullets): confirm that the timetable is now displayed on the right-hand pane, "
+                    "briefly read out the scheduled task timings in chronological order (check-ins, surgery, and clock-out), "
+                    "and note that hospital loudspeaker paging is armed for 5 minutes before each task. "
+                    "Do NOT mention unrelated patient heart rates or symptoms.\n\n"
+                    f"Current PC System Clock: {now_str}\n"
+                    "Scheduled Timetable Tasks:\n" + "\n".join(f"- {s}" for s in slot_summaries)
+                )
+                rescored_q, cloud_tt, engine_used = self._query_gemini_with_rescore(sys_tt, text, state)
+                reply = cloud_tt or fallback_tt_reply
+            self._record_clinician_turn(rescored_q or text, reply)
+
+            updated = state_manager.update_state(
+                {
+                    "ui_mode": "patient_stats",
+                    "custom_pane": {
+                        "kind": "timetable",
+                        "title": "Clinician Shift Timetable & Reminder Schedule",
+                        "subtitle": "Synced to Real PC Clock • 5-Min Prior Loudspeaker Paging",
+                        "filterWing": "",
+                        "generatedHtml": tt_html,
+                    },
+                    "last_clinician_input": rescored_q or text,
+                    "last_transcript": reply,
+                    "patient_panel": panel,
+                },
+                patient_id=active_id,
+            )
+            state_manager.append_audit_log(
+                actor="Clinician -> Malcolm",
+                action="TIMETABLE_SCHEDULED",
+                details=f"Created/updated {len(events)} calendar timetable tasks with 5-min loudspeaker reminders.",
+                pii_redacted=True,
+                engine=engine_used,
+                patient_id=active_id,
+            )
+            return {
+                "reply": reply,
+                "engine": engine_used,
+                "stage": updated.get("conversation_stage", "idle"),
+                "check_in_active": bool(updated.get("check_in_active")),
+                "state": state_manager.load_state(active_id),
+            }
+
         # 1. Cross-patient database queries ("list all patients", "show me a table", "give me statistics", etc.)
         if _is_multi_patient_overview_query(text) or (
             pane_intent and pane_intent.get("kind") in {"ward_table", "ward_stats"}
         ):
+            html_box: dict[str, str] = {}
+            html_thread: threading.Thread | None = None
+            if pane_intent and pane_intent.get("generate_html"):
+                def _parallel_html_worker() -> None:
+                    synthesized = self.generate_pane_html_css(text, db)
+                    html_box["html"] = synthesized
+                    curr_id = state_manager.get_active_patient_id()
+                    curr_st = state_manager.load_state(curr_id)
+                    if curr_st.get("ui_mode") == "patient_stats":
+                        cp = dict(curr_st.get("custom_pane") or {})
+                        if cp.get("kind") != "patient":
+                            cp["generatedHtml"] = synthesized
+                            state_manager.update_state({"custom_pane": cp}, patient_id=curr_id)
+
+                html_thread = threading.Thread(target=_parallel_html_worker, daemon=True)
+                html_thread.start()
+
             reply, engine_used = self._build_multi_patient_overview(text)
+            if html_thread is not None:
+                html_thread.join(timeout=0.25)
             if self._last_pane_directive.startswith("patient_"):
                 dir_pid = self._last_pane_directive.replace("patient_", "").strip()
                 if dir_pid in (db.get("patients") or {}):
@@ -1691,7 +2808,13 @@ class LocalRAGAgent:
             }
             if target_id:
                 overview_updates["ui_mode"] = "patient_stats"
-            pane_updates = self._resolve_pane_updates(text, pane_intent, target_id, state)
+            pane_updates = self._resolve_pane_updates(
+                text,
+                pane_intent,
+                target_id,
+                state,
+                generated_html=html_box.get("html", ""),
+            )
             overview_updates.update(pane_updates)
             updated = state_manager.update_state(
                 overview_updates,
@@ -1733,7 +2856,26 @@ class LocalRAGAgent:
 
         # 3. Direct clinical question when targeting a patient (or in open Q&A)
         if target_id and _is_direct_question(text) and "status" not in text.lower():
+            qa_html_box: dict[str, str] = {}
+            qa_html_thread: threading.Thread | None = None
+            if pane_intent and pane_intent.get("generate_html"):
+                def _qa_html_worker() -> None:
+                    synthesized = self.generate_pane_html_css(text, db)
+                    qa_html_box["html"] = synthesized
+                    curr_id = state_manager.get_active_patient_id()
+                    curr_st = state_manager.load_state(curr_id)
+                    if curr_st.get("ui_mode") == "patient_stats":
+                        cp = dict(curr_st.get("custom_pane") or {})
+                        if cp.get("kind") != "patient":
+                            cp["generatedHtml"] = synthesized
+                            state_manager.update_state({"custom_pane": cp}, patient_id=curr_id)
+
+                qa_html_thread = threading.Thread(target=_qa_html_worker, daemon=True)
+                qa_html_thread.start()
+
             answer, engine_used = self._answer_clinical_question(text, state, telemetry)
+            if qa_html_thread is not None:
+                qa_html_thread.join(timeout=0.25)
             display_input = self._last_rescored_transcript or text
             lowered = text.lower()
             is_impractical = _detect_impractical_request_fallback(text, state) is not None
@@ -1747,7 +2889,13 @@ class LocalRAGAgent:
                     else "patient_stats"
                 )
             )
-            pane_updates = self._resolve_pane_updates(text, pane_intent, target_id, state)
+            pane_updates = self._resolve_pane_updates(
+                text,
+                pane_intent,
+                target_id,
+                state,
+                generated_html=qa_html_box.get("html", ""),
+            )
             if "ui_mode" in pane_updates:
                 next_ui_mode = pane_updates["ui_mode"]
             projected = dict(state)
@@ -1868,7 +3016,7 @@ class LocalRAGAgent:
                 "last_transcript": answer,
                 "patient_panel": panel,
             }
-            if stage == "completed" or target_id:
+            if target_id:
                 q_updates["ui_mode"] = "patient_stats"
             q_updates.update(self._resolve_pane_updates(text, pane_intent, target_id, state))
             updated = state_manager.update_state(q_updates, patient_id=active_id)
@@ -2234,11 +3382,16 @@ class LocalRAGAgent:
                     "engine": self.get_engine_label(),
                     "state": state_manager.load_state(active_id),
                 }
-            return {
-                "ok": False,
-                "error": "No active bedside check-in right now.",
-                "state": state,
-            }
+            # Patient initiated voice/text directly from the bedside terminal: auto-activate bedside check-in!
+            state_manager.update_state(
+                {
+                    "check_in_active": True,
+                    "conversation_stage": "bedside_awaiting_symptom",
+                },
+                patient_id=active_id,
+                announce=False,
+            )
+            state = state_manager.load_state(active_id)
 
         state_manager.add_bedside_message("patient", text, patient_id=active_id)
         state = state_manager.load_state(active_id)

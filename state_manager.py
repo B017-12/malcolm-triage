@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -50,6 +51,10 @@ DEFAULT_PATIENTS: dict[str, dict[str, Any]] = {
         "nurse_dispatched": False,
         "check_in_active": False,
         "clinician_report_ready": False,
+        "alert_level": "normal",
+        "doctor_paged": False,
+        "crash_cart_active": False,
+        "emergency_message": "",
         "bedside_messages": [],
         "audit_log": [],
     },
@@ -89,6 +94,10 @@ DEFAULT_PATIENTS: dict[str, dict[str, Any]] = {
         "nurse_dispatched": False,
         "check_in_active": False,
         "clinician_report_ready": False,
+        "alert_level": "normal",
+        "doctor_paged": False,
+        "crash_cart_active": False,
+        "emergency_message": "",
         "bedside_messages": [],
         "audit_log": [],
     },
@@ -130,6 +139,10 @@ DEFAULT_PATIENTS: dict[str, dict[str, Any]] = {
         "nurse_dispatched": False,
         "check_in_active": False,
         "clinician_report_ready": False,
+        "alert_level": "normal",
+        "doctor_paged": False,
+        "crash_cart_active": False,
+        "emergency_message": "",
         "bedside_messages": [],
         "audit_log": [],
     },
@@ -171,6 +184,10 @@ DEFAULT_PATIENTS: dict[str, dict[str, Any]] = {
         "nurse_dispatched": False,
         "check_in_active": False,
         "clinician_report_ready": False,
+        "alert_level": "normal",
+        "doctor_paged": False,
+        "crash_cart_active": False,
+        "emergency_message": "",
         "bedside_messages": [],
         "audit_log": [],
     },
@@ -181,6 +198,8 @@ DEFAULT_STATE: dict[str, Any] = copy.deepcopy(DEFAULT_PATIENTS["1429"])
 DEFAULT_DB: dict[str, Any] = {
     "active_patient_id": "1429",
     "patients": copy.deepcopy(DEFAULT_PATIENTS),
+    "calendar_events": [],
+    "last_page_alert": None,
 }
 
 
@@ -231,9 +250,23 @@ class StateManager:
         if active_id not in merged_patients:
             active_id = "1429"
 
+        calendar_events = raw_db.get("calendar_events")
+        if not isinstance(calendar_events, list):
+            calendar_events = []
+        last_page_alert = raw_db.get("last_page_alert")
+        if not isinstance(last_page_alert, dict):
+            last_page_alert = None
+        try:
+            reply_seq = int(raw_db.get("reply_seq") or 0)
+        except (TypeError, ValueError):
+            reply_seq = 0
+
         return {
             "active_patient_id": active_id,
             "patients": merged_patients,
+            "calendar_events": calendar_events,
+            "last_page_alert": last_page_alert,
+            "reply_seq": reply_seq,
         }
 
     def _read_db_unlocked(self) -> dict[str, Any]:
@@ -289,6 +322,9 @@ class StateManager:
                         "wave_state": p.get("wave_state", ""),
                         "check_in_active": bool(p.get("check_in_active")),
                         "nurse_dispatched": bool(p.get("nurse_dispatched")),
+                        "alert_level": p.get("alert_level", "normal"),
+                        "doctor_paged": bool(p.get("doctor_paged")),
+                        "crash_cart_active": bool(p.get("crash_cart_active")),
                         "active": pid == active_id,
                     }
                 )
@@ -336,22 +372,37 @@ class StateManager:
         self,
         mutator: Callable[[dict[str, Any]], None] | dict[str, Any],
         patient_id: str | None = None,
+        announce: bool = True,
     ) -> dict[str, Any]:
-        """Atomically read, mutate, and save a patient's state under FileLock."""
+        """Atomically read, mutate, and save a patient's state under FileLock.
+
+        When the mutation changes `last_transcript` (Malcolm's spoken reply) and `announce`
+        is True, a global monotonic `reply_seq` is bumped so the clinician UI speaks it exactly once.
+        """
         with self._lock:
             db = self._read_db_unlocked()
             pid = str(patient_id) if patient_id else db["active_patient_id"]
             if pid not in db["patients"]:
                 pid = db["active_patient_id"]
             state = db["patients"][pid]
+            before_reply = state.get("last_transcript")
             if callable(mutator):
                 mutator(state)
             elif isinstance(mutator, dict):
                 state.update(mutator)
             else:
                 raise TypeError("mutator must be a callable or dict")
+            if announce and state.get("last_transcript") != before_reply:
+                now_ms = int(time.time() * 1000)
+                db["reply_seq"] = max(int(db.get("reply_seq") or 0) + 1, now_ms)
             self._write_db_unlocked(db)
             return copy.deepcopy(state)
+
+    def get_reply_seq(self) -> int:
+        """Return the monotonic sequence number of Malcolm's latest spoken reply."""
+        with self._lock:
+            db = self._read_db_unlocked()
+            return int(db.get("reply_seq") or 0)
 
     def append_audit_log(
         self,
@@ -401,8 +452,43 @@ class StateManager:
         """Reset all patients in patients_db.json back to clean idle defaults."""
         with self._lock:
             fresh_db = copy.deepcopy(DEFAULT_DB)
+            # Keep reply_seq monotonic across resets so the UI never misses a future reply.
+            try:
+                prev_seq = int(self._read_db_unlocked().get("reply_seq") or 0)
+            except Exception:
+                prev_seq = 0
+            fresh_db["reply_seq"] = prev_seq
             self._write_db_unlocked(fresh_db)
             return copy.deepcopy(fresh_db["patients"]["1429"])
+
+    def get_calendar_events(self) -> list[dict[str, Any]]:
+        """Return the current list of scheduled clinician calendar/timetable events."""
+        with self._lock:
+            db = self._read_db_unlocked()
+            return copy.deepcopy(db.get("calendar_events") or [])
+
+    def set_calendar_events(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Replace the clinician calendar/timetable events list atomically."""
+        with self._lock:
+            db = self._read_db_unlocked()
+            db["calendar_events"] = copy.deepcopy(events)
+            self._write_db_unlocked(db)
+            return copy.deepcopy(db["calendar_events"])
+
+    def get_last_page_alert(self) -> dict[str, Any] | None:
+        """Return the most recent hospital loudspeaker page alert if any."""
+        with self._lock:
+            db = self._read_db_unlocked()
+            alert = db.get("last_page_alert")
+            return copy.deepcopy(alert) if isinstance(alert, dict) else None
+
+    def record_page_alert(self, alert: dict[str, Any]) -> dict[str, Any]:
+        """Store the latest hospital loudspeaker page alert in the database."""
+        with self._lock:
+            db = self._read_db_unlocked()
+            db["last_page_alert"] = copy.deepcopy(alert)
+            self._write_db_unlocked(db)
+            return copy.deepcopy(alert)
 
 
 state_manager = StateManager()
@@ -436,9 +522,10 @@ def save_state(state: dict[str, Any], patient_id: str | None = None) -> dict[str
 def update_state(
     mutator: Callable[[dict[str, Any]], None] | dict[str, Any],
     patient_id: str | None = None,
+    announce: bool = True,
 ) -> dict[str, Any]:
     """Module-level helper to atomically update patient state."""
-    return state_manager.update_state(mutator, patient_id=patient_id)
+    return state_manager.update_state(mutator, patient_id=patient_id, announce=announce)
 
 
 def append_audit_log(

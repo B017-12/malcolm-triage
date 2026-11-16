@@ -36,10 +36,32 @@ function Index() {
   useModeHotkeys();
   const { mode, patient, bpm } = useMalcolm();
   const stats = mode === "patient";
+  const isCritical = bpm >= 145;
+  const isHighBpm = bpm >= 115 && bpm < 145;
+  const roomDisplay = /^room\b/i.test(patient.room) ? patient.room : `Room ${patient.room}`;
 
   return (
-    <main className="flex h-dvh w-screen overflow-hidden bg-background">
+    <main className="relative flex h-dvh w-screen overflow-hidden bg-background">
       <h1 className="sr-only">Malcolm clinical triage assistant</h1>
+
+      {isCritical || isHighBpm ? (
+        <div
+          role="alert"
+          className={cn(
+            "fixed top-3 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 border px-5 py-2.5 font-mono text-xs font-semibold uppercase tracking-[0.16em] text-foreground shadow-2xl",
+            isCritical
+              ? "animate-pulse border-rose bg-alert text-foreground"
+              : "border-rose/80 bg-alert/90 text-foreground",
+          )}
+        >
+          <span className="animate-beat-dot size-2.5 bg-foreground" />
+          <span>
+            {isCritical
+              ? `🚨 CODE BLUE EMERGENCY (${bpm} BPM) — CRASH CART DEMANDED TO ${patient.wing.toUpperCase()}, ${roomDisplay.toUpperCase()} (${patient.name.toUpperCase()})`
+              : `🔔 HIGH BPM ALERT (${bpm} BPM) — ATTENDING DOCTOR PAGED TO ${patient.wing.toUpperCase()}, ${roomDisplay.toUpperCase()} (${patient.name.toUpperCase()})`}
+          </span>
+        </div>
+      ) : null}
 
       {/* Left: wave canvas + circle. Full width, or compressed to 38vw for patient stats. */}
       <section

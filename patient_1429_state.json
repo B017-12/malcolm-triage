@@ -11,9 +11,9 @@
   "current_bpm": 90,
   "wave_state": "Awake / Normal Sinus Rhythm",
   "conversation_stage": "idle",
-  "ui_mode": "patient_stats",
-  "last_clinician_input": "Sure a de show o the war table actually never mind",
-  "last_transcript": "Understood, Doctor. I am standing by for your next instruction on the ward.",
+  "ui_mode": "idle",
+  "last_clinician_input": "",
+  "last_transcript": "Listening for clinician request...",
   "patient_panel": {
     "name": "Mika Hämäläinen",
     "patientId": "1429",
@@ -32,21 +32,10 @@
   "nurse_dispatched": false,
   "check_in_active": false,
   "clinician_report_ready": false,
+  "alert_level": "normal",
+  "doctor_paged": false,
+  "crash_cart_active": false,
+  "emergency_message": "",
   "bedside_messages": [],
-  "audit_log": [
-    {
-      "timestamp": "2026-11-15T02:12:37Z",
-      "actor": "Clinician -> Malcolm",
-      "action": "MULTI_PATIENT_QUERY",
-      "details": "Answered cross-patient clinical RAG query over patients_db.json.",
-      "pii_redacted": true,
-      "engine": "Gemini gemini-3.5-flash-lite + Local RAG"
-    }
-  ],
-  "custom_pane": {
-    "kind": "ward_table",
-    "title": "Active Ward Roster — All Monitored Patients",
-    "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
-    "filterWing": ""
-  }
+  "audit_log": []
 }

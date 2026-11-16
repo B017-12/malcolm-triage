@@ -19,10 +19,12 @@ env/
 
 # Local Speech / ML Models (large binaries)
 models/
+pixel-perfect-page-recraft/public/mediapipe/
 *.onnx
 *.bin
 *.pt
 *.safetensors
+*.task
 
 # Node / Vite / React
 node_modules/

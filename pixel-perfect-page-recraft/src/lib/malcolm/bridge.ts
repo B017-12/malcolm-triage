@@ -30,16 +30,65 @@ declare global {
   }
 }
 
-function applyState(s: RemoteState) {
+let suppressPollModeUntil = 0;
+let lastHandledExportId = "";
+
+export function markLocalPaneAction(lockMs = 1800) {
+  suppressPollModeUntil = Date.now() + lockMs;
+}
+
+function triggerBrowserExportDownload(format: "xlsx" | "png", kind: string) {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  const host = window.location.hostname || "localhost";
+  const url = `http://${host}:5000/api/export/${format}?kind=${encodeURIComponent(kind || "patient")}`;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `malcolm_${kind || "report"}.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function applyState(s: RemoteState, fromPoll = false) {
+  const pollModeLocked = fromPoll && Date.now() < suppressPollModeUntil;
   if (s.patient) malcolmStore.setPatient(s.patient);
-  if (s.customPane) malcolmStore.setCustomPane(s.customPane);
+  if (s.customPane && !pollModeLocked) malcolmStore.setCustomPane(s.customPane);
   if (s.wardHud) malcolmStore.setWardHud(s.wardHud);
-  const prevMode = malcolmStore.get().mode;
-  if (s.mode) malcolmStore.setMode(s.mode, s.bpm);
+  const current = malcolmStore.get();
+  const prevMode = current.mode;
+  const prevSeq = current.replySeq;
+  if (s.mode && !pollModeLocked) malcolmStore.setMode(s.mode, s.bpm);
   else if (s.bpm !== undefined) malcolmStore.setBpm(s.bpm);
   if (s.clinicianCaption !== undefined) malcolmStore.setClinicianCaption(s.clinicianCaption);
-  if (s.caption !== undefined) malcolmStore.setCaption(s.caption);
-  else if (s.mode && s.mode !== prevMode) malcolmStore.setCaption(DEFAULT_CAPTIONS[s.mode]);
+
+  if (s.exportRequest && s.exportRequest.id !== lastHandledExportId) {
+    lastHandledExportId = s.exportRequest.id;
+    const tsMatch = /^exp_(\d+)$/.exec(s.exportRequest.id);
+    const isFresh = !tsMatch || Date.now() - Number(tsMatch[1]) < 15000;
+    if (isFresh) {
+      const k = s.exportRequest.kind || s.customPane?.kind || current.customPane.kind || "patient";
+      if (s.exportRequest.format === "xlsx" || s.exportRequest.format === "both") {
+        triggerBrowserExportDownload("xlsx", k);
+      }
+      if (s.exportRequest.format === "png" || s.exportRequest.format === "both") {
+        setTimeout(() => triggerBrowserExportDownload("png", k), s.exportRequest.format === "both" ? 350 : 0);
+      }
+    }
+  }
+
+  const hasNewReplySeq = s.replySeq !== undefined && s.replySeq !== prevSeq;
+  if (s.replySeq !== undefined) {
+    malcolmStore.setReplySeq(s.replySeq);
+  }
+  if (s.caption !== undefined) {
+    // During background polling, only update caption when replySeq actually changed
+    // (or on initial load when current.caption is still the default)
+    if (!fromPoll || hasNewReplySeq || s.replySeq === undefined || current.replySeq === 0) {
+      malcolmStore.setCaption(s.caption);
+    }
+  } else if (s.mode && s.mode !== prevMode) {
+    malcolmStore.setCaption(DEFAULT_CAPTIONS[s.mode]);
+  }
 }
 
 export function installMalcolmBridge(): () => void {
@@ -64,7 +113,7 @@ export function installMalcolmBridge(): () => void {
         // Only apply changes, so the demo controller isn't overridden every second.
         if (body === lastBody) return;
         lastBody = body;
-        applyState(parseRemoteState(JSON.parse(body)));
+        applyState(parseRemoteState(JSON.parse(body)), true);
       } catch {
         // Backend offline or bad JSON: stay quiet and keep the current state.
       } finally {

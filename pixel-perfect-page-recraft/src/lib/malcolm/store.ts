@@ -17,6 +17,7 @@ export interface MalcolmState {
   bpm: number;
   caption: string;
   clinicianCaption: string;
+  replySeq: number;
   patient: PatientSummary;
   customPane: CustomPaneConfig;
   wardHud: WardHudData;
@@ -33,6 +34,7 @@ let state: MalcolmState = {
   bpm: DEFAULT_BPM,
   caption: DEFAULT_CAPTIONS.idle,
   clinicianCaption: "",
+  replySeq: 0,
   patient: DEFAULT_PATIENT,
   customPane: DEFAULT_CUSTOM_PANE,
   wardHud: DEFAULT_WARD_HUD,
@@ -71,6 +73,11 @@ export const malcolmStore = {
   setClinicianCaption(text: unknown) {
     const clinicianCaption = typeof text === "string" ? text.trim() : "";
     emit({ clinicianCaption });
+  },
+  setReplySeq(seq: unknown) {
+    if (typeof seq === "number" && Number.isFinite(seq)) {
+      emit({ replySeq: seq });
+    }
   },
   /** Shows a caption line. It stays until replaced, or fades after durationMs when given. */
   setCaption(text: unknown, durationMs?: number) {

@@ -12,10 +12,12 @@ const R = 132; // inner radius where blades start
 const ECG_D =
   "M 0 35 L 55 35 L 68 22 L 78 45 L 90 6 L 102 62 L 114 18 L 126 35 L 150 26 L 165 35 L 240 35";
 
-/** 40-blade radial sunburst; calm harmonic wave when idle, BPM pulse + ECG in vitals states. */
+/** 40-blade radial sunburst; calm harmonic wave when idle/non-patient pane, BPM pulse + ECG only for specific patient vitals. */
 export function RadialRing() {
-  const { mode, bpm } = useMalcolm();
-  const vitals = mode !== "idle";
+  const { mode, bpm, customPane } = useMalcolm();
+  const paneKind = customPane?.kind || "patient";
+  const vitals = mode === "heart" || (mode === "patient" && paneKind === "patient");
+  const showIdleLabel = mode === "idle";
   const bars = useRef<(SVGLineElement | null)[]>([]);
 
   useEffect(() => {
@@ -24,15 +26,22 @@ export function RadialRing() {
     let t = 0;
     let phase = 0;
     let last = performance.now();
-    let m = malcolmStore.get().mode === "idle" ? 0 : 1;
+    const initState = malcolmStore.get();
+    const initVitals =
+      initState.mode === "heart" ||
+      (initState.mode === "patient" && (initState.customPane?.kind || "patient") === "patient");
+    let m = initVitals ? 1 : 0;
 
     const frame = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
       t += dt * (reduced ? 0.35 : 1);
       const s = malcolmStore.get();
+      const sVitals =
+        s.mode === "heart" ||
+        (s.mode === "patient" && (s.customPane?.kind || "patient") === "patient");
       phase += dt * (s.bpm / 60);
-      m += ((s.mode === "idle" ? 0 : 1) - m) * (1 - Math.exp(-dt * 3));
+      m += ((sVitals ? 1 : 0) - m) * (1 - Math.exp(-dt * 3));
       const env = beatEnvelope(phase);
 
       const breath = 1 + 0.015 * Math.sin(t * 0.9);
@@ -89,7 +98,7 @@ export function RadialRing() {
       <p
         className={cn(
           "pointer-events-none absolute inset-x-0 top-1/2 z-20 -translate-y-1/2 text-center font-sans text-[clamp(1.1rem,3.8vmin,1.5rem)] font-medium tracking-tight text-core-ink transition-all duration-700 ease-out",
-          vitals ? "scale-95 opacity-0" : "scale-100 opacity-100",
+          showIdleLabel ? "scale-100 opacity-100" : "scale-95 opacity-0",
         )}
       >
         At your Service
