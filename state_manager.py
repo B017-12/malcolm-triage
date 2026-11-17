@@ -224,31 +224,29 @@ class StateManager:
         self._lock = FileLock(str(self.lock_path), timeout=timeout)
 
     def _normalize_db(self, raw_db: Any) -> dict[str, Any]:
-        """Ensure every default patient exists with all schema keys."""
+        """Ensure every patient in the database has all required schema keys while honoring added/deleted patients."""
         if not isinstance(raw_db, dict):
             return copy.deepcopy(DEFAULT_DB)
 
         patients_in = raw_db.get("patients")
-        if not isinstance(patients_in, dict):
-            patients_in = {}
-
-        merged_patients: dict[str, dict[str, Any]] = {}
-        for pid, template in DEFAULT_PATIENTS.items():
-            entry = copy.deepcopy(template)
-            existing = patients_in.get(pid)
-            if isinstance(existing, dict):
+        if not isinstance(patients_in, dict) or len(patients_in) == 0:
+            merged_patients = copy.deepcopy(DEFAULT_PATIENTS)
+        else:
+            merged_patients = {}
+            for pid, existing in patients_in.items():
+                if not isinstance(existing, dict):
+                    continue
+                template = DEFAULT_PATIENTS.get(str(pid), DEFAULT_STATE)
+                entry = copy.deepcopy(template)
                 entry.update(existing)
-            merged_patients[pid] = entry
-
-        for pid, existing in patients_in.items():
-            if pid not in merged_patients and isinstance(existing, dict):
-                entry = copy.deepcopy(DEFAULT_STATE)
-                entry.update(existing)
-                merged_patients[pid] = entry
+                entry["patient_id"] = str(pid)
+                merged_patients[str(pid)] = entry
+            if not merged_patients:
+                merged_patients = copy.deepcopy(DEFAULT_PATIENTS)
 
         active_id = str(raw_db.get("active_patient_id") or "1429")
         if active_id not in merged_patients:
-            active_id = "1429"
+            active_id = sorted(merged_patients.keys())[0]
 
         calendar_events = raw_db.get("calendar_events")
         if not isinstance(calendar_events, list):
@@ -489,6 +487,112 @@ class StateManager:
             db["last_page_alert"] = copy.deepcopy(alert)
             self._write_db_unlocked(db)
             return copy.deepcopy(alert)
+
+    def add_patient(
+        self,
+        name: str,
+        wing: str = "Wing B",
+        room: str = "Room 210",
+        condition: str = "General Observation",
+        department: str = "Internal Medicine",
+        protocol: str = "Continuous Telemetry & Q4H Vitals",
+        baseline_bpm: int = 82,
+        symptom: str = "",
+        nurse_note: str = "",
+        patient_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Add/admit a new patient into patients_db.json and return their created state."""
+        with self._lock:
+            db = self._read_db_unlocked()
+            patients = db.setdefault("patients", {})
+            if patient_id and str(patient_id).strip() and str(patient_id).strip() not in patients:
+                new_id = str(patient_id).strip()
+            else:
+                numeric_ids = [int(k) for k in patients.keys() if str(k).isdigit()]
+                next_num = max(numeric_ids, default=1432) + 1
+                new_id = str(next_num)
+
+            clean_name = name.strip() or f"Patient {new_id}"
+            clean_wing = wing.strip() or "Wing B"
+            if not clean_wing.lower().startswith("wing"):
+                clean_wing = f"Wing {clean_wing.upper()}"
+            clean_room = room.strip() or "Room 210"
+            room_num = clean_room.replace("Room", "").replace("room", "").strip() or "210"
+            clean_room_full = f"Room {room_num}"
+            bpm_val = max(45, min(180, int(baseline_bpm or 82)))
+            wave_state = (
+                "Awake / Mild Sinus Tachycardia"
+                if bpm_val >= 100
+                else ("Sleeping / Slow Sinus Rhythm" if bpm_val < 68 else "Awake / Normal Sinus Rhythm")
+            )
+            rhythm_short = wave_state.split("/", 1)[-1].strip()
+            symptoms_list = [symptom.strip()] if symptom.strip() else []
+            notes_list = [nurse_note.strip()] if nurse_note.strip() else []
+
+            entry = copy.deepcopy(DEFAULT_STATE)
+            entry.update(
+                {
+                    "patient_id": new_id,
+                    "name": clean_name,
+                    "pronoun_obj": "them",
+                    "wing": clean_wing,
+                    "room": clean_room_full,
+                    "condition": condition.strip() or "General Observation",
+                    "department": department.strip() or "Internal Medicine",
+                    "protocol": protocol.strip() or "Continuous Telemetry & Q4H Vitals",
+                    "baseline_bpm": bpm_val,
+                    "current_bpm": bpm_val,
+                    "wave_state": wave_state,
+                    "conversation_stage": "idle",
+                    "ui_mode": "patient_stats",
+                    "custom_pane": {
+                        "kind": "ward_table",
+                        "title": "Active Ward Roster — All Monitored Patients",
+                        "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
+                        "filterWing": "",
+                        "generatedHtml": "",
+                    },
+                    "patient_symptoms": symptoms_list,
+                    "nurse_notes": notes_list,
+                    "patient_panel": {
+                        "name": clean_name,
+                        "patientId": new_id,
+                        "wing": clean_wing,
+                        "room": room_num,
+                        "department": department.strip() or "Internal Medicine",
+                        "protocol": protocol.strip() or "Continuous Telemetry & Q4H Vitals",
+                        "rhythm": rhythm_short,
+                        "telemetryDetail": f"Awake • Baseline {bpm_val} BPM • Signal Locked",
+                        "nurseRounds": notes_list[0] if notes_list else "Newly admitted — initial nursing intake complete.",
+                        "symptom": symptoms_list[0] if symptoms_list else "No acute discomfort reported upon admission.",
+                        "dispatchStatus": "",
+                    },
+                }
+            )
+            patients[new_id] = entry
+            db["active_patient_id"] = new_id
+            self._write_db_unlocked(db)
+            return copy.deepcopy(entry)
+
+    def delete_patient(self, patient_id: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        """Remove/discharge a patient from patients_db.json and return (deleted_entry, active_state)."""
+        pid = str(patient_id).strip()
+        with self._lock:
+            db = self._read_db_unlocked()
+            patients = db.get("patients") or {}
+            if pid not in patients:
+                active = patients.get(db.get("active_patient_id", ""), next(iter(patients.values()), copy.deepcopy(DEFAULT_STATE)))
+                return None, copy.deepcopy(active)
+
+            deleted = copy.deepcopy(patients.pop(pid))
+            if not patients:
+                # If the very last patient was removed, re-seed default 1429 so the ward is never empty/broken
+                patients["1429"] = copy.deepcopy(DEFAULT_PATIENTS["1429"])
+            if db.get("active_patient_id") not in patients:
+                db["active_patient_id"] = sorted(patients.keys())[0]
+            active_id = db["active_patient_id"]
+            self._write_db_unlocked(db)
+            return deleted, copy.deepcopy(patients[active_id])
 
 
 state_manager = StateManager()

@@ -216,6 +216,24 @@ function PaneTopNav({ activeKind }: { activeKind: CustomPaneKind }) {
   );
 }
 
+async function deletePatientFromWard(patientId: string, e: React.MouseEvent) {
+  e.stopPropagation();
+  try {
+    const host = typeof window !== "undefined" && window.location.hostname ? window.location.hostname : "localhost";
+    const res = await fetch(`http://${host}:5000/api/patients/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patient_id: patientId }),
+    });
+    if (res.ok) {
+      const payload = await res.json();
+      window.malcolm?.apply(payload);
+    }
+  } catch {
+    // Ignore offline error
+  }
+}
+
 function WardTableView() {
   const { customPane, wardHud, patient } = useMalcolm();
   const hud = wardHud?.patients?.length ? wardHud : DEFAULT_WARD_HUD;
@@ -223,6 +241,39 @@ function WardTableView() {
   const rows = filterWing
     ? hud.patients.filter((p) => p.wing.toLowerCase() === filterWing.toLowerCase())
     : hud.patients;
+
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newWing, setNewWing] = useState("Wing B");
+  const [newRoom, setNewRoom] = useState("210");
+  const [newCondition, setNewCondition] = useState("Cardiac Observation");
+  const [newBpm, setNewBpm] = useState("84");
+
+  const handleAddPatient = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const host = typeof window !== "undefined" && window.location.hostname ? window.location.hostname : "localhost";
+      const res = await fetch(`http://${host}:5000/api/patients/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newName.trim() || "Alex Rivera",
+          wing: newWing,
+          room: `Room ${newRoom.replace(/^room\s*/i, "").trim() || "210"}`,
+          condition: newCondition.trim() || "General Clinical Observation",
+          baseline_bpm: Number(newBpm) || 84,
+        }),
+      });
+      if (res.ok) {
+        const payload = await res.json();
+        window.malcolm?.apply(payload);
+        setNewName("");
+        setShowAddForm(false);
+      }
+    } catch {
+      // Ignore offline error
+    }
+  };
 
   const wings = ["", "Wing A", "Wing B", "Wing C"];
 
@@ -240,7 +291,7 @@ function WardTableView() {
               {customPane.title || "Active Ward Roster — All Patients"}
             </h2>
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             {wings.map((w) => {
               const isSelected = filterWing.toLowerCase() === w.toLowerCase();
               return (
@@ -258,8 +309,63 @@ function WardTableView() {
                 </button>
               );
             })}
+            <button
+              type="button"
+              onClick={() => setShowAddForm((v) => !v)}
+              className="border border-telemetry/70 bg-telemetry/15 px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.16em] text-telemetry transition-colors hover:bg-telemetry/25"
+            >
+              {showAddForm ? "× Cancel" : "+ Admit Patient"}
+            </button>
           </div>
         </div>
+        {showAddForm ? (
+          <form onSubmit={(e) => void handleAddPatient(e)} className="mt-3 flex flex-wrap items-center gap-2 border border-hairline bg-background/60 p-2.5">
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Patient Name (e.g. Alex Rivera)"
+              className="border border-hairline bg-background px-2.5 py-1 text-xs text-foreground outline-none focus:border-telemetry"
+            />
+            <select
+              value={newWing}
+              onChange={(e) => setNewWing(e.target.value)}
+              className="border border-hairline bg-background px-2 py-1 font-mono text-xs text-foreground outline-none"
+            >
+              <option value="Wing A">Wing A</option>
+              <option value="Wing B">Wing B</option>
+              <option value="Wing C">Wing C</option>
+            </select>
+            <input
+              type="text"
+              value={newRoom}
+              onChange={(e) => setNewRoom(e.target.value)}
+              placeholder="Room #"
+              className="w-20 border border-hairline bg-background px-2 py-1 font-mono text-xs text-foreground outline-none"
+            />
+            <input
+              type="text"
+              value={newCondition}
+              onChange={(e) => setNewCondition(e.target.value)}
+              placeholder="Condition"
+              className="border border-hairline bg-background px-2.5 py-1 text-xs text-foreground outline-none"
+            />
+            <input
+              type="number"
+              value={newBpm}
+              onChange={(e) => setNewBpm(e.target.value)}
+              min={45}
+              max={180}
+              className="w-16 border border-hairline bg-background px-2 py-1 font-mono text-xs text-foreground outline-none"
+            />
+            <button
+              type="submit"
+              className="border border-telemetry bg-telemetry/20 px-3 py-1 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-telemetry hover:bg-telemetry/30"
+            >
+              Save to Ward DB
+            </button>
+          </form>
+        ) : null}
       </Zone>
 
       {/* Zone 2 — All-Patients Clinical Roster Table */}
@@ -272,7 +378,8 @@ function WardTableView() {
                 <th className="px-3 py-2.5">Location</th>
                 <th className="px-3 py-2.5">Department &amp; Protocol</th>
                 <th className="px-3 py-2.5">Live Telemetry</th>
-                <th className="py-2.5 pl-3 pr-4">Symptoms &amp; Round Status</th>
+                <th className="py-2.5 pl-3 pr-2">Symptoms &amp; Round Status</th>
+                <th className="py-2.5 pl-2 pr-4 text-right">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-hairline">
@@ -325,13 +432,23 @@ function WardTableView() {
                         {isSleeping ? "Sleeping" : "Awake"} • {row.rhythm}
                       </div>
                     </td>
-                    <td className="py-3 pl-3 pr-4 align-top">
+                    <td className="py-3 pl-3 pr-2 align-top">
                       <p className="line-clamp-2 text-xs leading-snug text-text-bright">
                         {row.symptom}
                       </p>
                       <p className="mt-1 line-clamp-1 font-mono text-[11px] text-pane-meta">
                         {row.nurseNote}
                       </p>
+                    </td>
+                    <td className="py-3 pl-2 pr-4 text-right align-top">
+                      <button
+                        type="button"
+                        onClick={(e) => void deletePatientFromWard(row.patientId, e)}
+                        title={`Discharge / remove Patient #${row.patientId}`}
+                        className="border border-hairline bg-background/50 px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-pane-meta transition-colors hover:border-rose hover:bg-rose/20 hover:text-rose-soft"
+                      >
+                        Discharge ✕
+                      </button>
                     </td>
                   </tr>
                 );
@@ -839,7 +956,7 @@ export function PatientPane({ patient, bpm }: { patient: PatientSummary; bpm: nu
     return () => window.removeEventListener("message", onMessage);
   }, [wardHud]);
 
-  if (generatedHtml && paneKind !== "patient") {
+  if (generatedHtml && (paneKind === "timetable" || paneKind === "custom_html")) {
     return <GeneratedHtmlView htmlCode={generatedHtml} activeKind={paneKind} />;
   }
 

@@ -11,6 +11,7 @@ import json
 import os
 import re
 import socket
+import sys
 import tempfile
 import textwrap
 import threading
@@ -38,6 +39,22 @@ try:
 except ImportError:
     winsound = None  # type: ignore[assignment]
     _WINSOUND_AVAILABLE = False
+
+_winsound_enabled: bool = os.getenv("WINSOUND_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+if "--no-winsound" in sys.argv:
+    _winsound_enabled = False
+
+
+def set_winsound_enabled(enabled: bool) -> bool:
+    """Enable or disable terminal winsound speaker playback at runtime."""
+    global _winsound_enabled
+    _winsound_enabled = bool(enabled)
+    if not _winsound_enabled and _WINSOUND_AVAILABLE and winsound is not None:
+        try:
+            winsound.PlaySound(None, 0)
+        except Exception:
+            pass
+    return _winsound_enabled
 
 try:
     import openpyxl
@@ -1605,7 +1622,7 @@ def _broadcast_bpm_emergency_page(
     _prewarm_reply_sentences_async(announcement)
 
     def _play_emergency_speaker() -> None:
-        if not _WINSOUND_AVAILABLE or winsound is None:
+        if not _WINSOUND_AVAILABLE or not _winsound_enabled or winsound is None:
             return
         with _speaker_page_lock:
             try:
@@ -1614,12 +1631,15 @@ def _broadcast_bpm_emergency_page(
                     if level == "critical"
                     else _synthesize_hospital_pa_chime_wav(24000)
                 )
-                winsound.PlaySound(tone_wav, winsound.SND_MEMORY)
+                if _winsound_enabled:
+                    winsound.PlaySound(tone_wav, winsound.SND_MEMORY)
             except Exception:
                 pass
+            if not _winsound_enabled:
+                return
             try:
                 speech_bytes, mime = _synthesize_jarvis_audio(announcement, voice=TTS_VOICE)
-                if mime == "audio/wav" and speech_bytes:
+                if _winsound_enabled and mime == "audio/wav" and speech_bytes:
                     winsound.PlaySound(speech_bytes, winsound.SND_MEMORY)
             except Exception:
                 pass
@@ -2193,6 +2213,128 @@ def api_select_patient() -> Any:
     )
 
 
+@app.route("/api/patients/add", methods=["POST", "OPTIONS"])
+def api_patients_add() -> Any:
+    """Admit/add a new patient to patients_db.json and refresh the Ward Roster."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    payload = request.get_json(silent=True) or {}
+    name = str(payload.get("name", "Alex Rivera")).strip() or "Alex Rivera"
+    wing = str(payload.get("wing", "Wing B")).strip() or "Wing B"
+    room = str(payload.get("room", "Room 210")).strip() or "Room 210"
+    condition = str(payload.get("condition", "General Clinical Observation")).strip() or "General Clinical Observation"
+    department = str(payload.get("department", "Internal Medicine")).strip() or "Internal Medicine"
+    protocol = str(payload.get("protocol", "Continuous Telemetry & Q4H Vitals")).strip() or "Continuous Telemetry & Q4H Vitals"
+    try:
+        bpm = int(payload.get("baseline_bpm", payload.get("bpm", 82)))
+    except (TypeError, ValueError):
+        bpm = 82
+
+    created = state_manager.add_patient(
+        name=name,
+        wing=wing,
+        room=room,
+        condition=condition,
+        department=department,
+        protocol=protocol,
+        baseline_bpm=bpm,
+        symptom=str(payload.get("symptom", "")),
+        nurse_note=str(payload.get("nurse_note", "")),
+        patient_id=str(payload.get("patient_id", "")).strip() or None,
+    )
+    new_id = str(created.get("patient_id", "1433"))
+    total_count = len(state_manager.load_db().get("patients", {}))
+    reply = (
+        f"Admitted Patient {new_id}, {created.get('name')} to {created.get('wing')}, "
+        f"{created.get('room')} ({created.get('condition')}, {created.get('current_bpm')} BPM). "
+        f"The ward roster now has {total_count} monitored patients."
+    )
+    updated = state_manager.update_state(
+        {
+            "ui_mode": "patient_stats",
+            "custom_pane": {
+                "kind": "ward_table",
+                "title": "Active Ward Roster — All Monitored Patients",
+                "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
+                "filterWing": "",
+                "generatedHtml": "",
+            },
+            "last_transcript": reply,
+        },
+        patient_id=new_id,
+    )
+    _prewarm_reply_sentences_async(reply)
+    return jsonify(
+        {
+            "ok": True,
+            "reply": reply,
+            "active_patient_id": new_id,
+            "patients_list": state_manager.list_patients(),
+            "state": updated["ui_mode"],
+            "data": _build_bridge_data(updated),
+            "raw_state": updated,
+        }
+    )
+
+
+@app.route("/api/patients/delete", methods=["POST", "OPTIONS"])
+def api_patients_delete() -> Any:
+    """Discharge/remove a patient from patients_db.json and refresh the Ward Roster."""
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    payload = request.get_json(silent=True) or {}
+    patient_id = str(payload.get("patient_id", "")).strip()
+    if not patient_id:
+        return jsonify({"ok": False, "error": "patient_id is required."}), 400
+
+    deleted_entry, next_active = state_manager.delete_patient(patient_id)
+    if deleted_entry is None:
+        return jsonify({"ok": False, "error": f"Patient {patient_id} not found."}), 404
+
+    next_id = str(next_active.get("patient_id", state_manager.get_active_patient_id()))
+    rem_count = len(state_manager.load_db().get("patients", {}))
+    del_name = deleted_entry.get("name", f"Patient {patient_id}")
+    reply = (
+        f"Discharged and removed Patient {patient_id}, {del_name} from the active ward database. "
+        f"We now have {rem_count} monitored patient{'s' if rem_count != 1 else ''} on the floor."
+    )
+    telemetry = telemetry_provider.get_reading(
+        baseline_bpm=int(next_active.get("baseline_bpm", 90)),
+        wave_state=str(next_active.get("wave_state", "Awake / Normal Sinus Rhythm")),
+    )
+    panel = rag_agent.synthesize_patient_panel(next_active, telemetry)
+    updated = state_manager.update_state(
+        {
+            "ui_mode": "patient_stats",
+            "custom_pane": {
+                "kind": "ward_table",
+                "title": "Active Ward Roster — All Monitored Patients",
+                "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
+                "filterWing": "",
+                "generatedHtml": "",
+            },
+            "last_transcript": reply,
+            "patient_panel": panel,
+        },
+        patient_id=next_id,
+    )
+    _prewarm_reply_sentences_async(reply)
+    return jsonify(
+        {
+            "ok": True,
+            "reply": reply,
+            "deleted_patient_id": patient_id,
+            "active_patient_id": next_id,
+            "patients_list": state_manager.list_patients(),
+            "state": updated["ui_mode"],
+            "data": _build_bridge_data(updated),
+            "raw_state": updated,
+        }
+    )
+
+
 @app.route("/api/pane", methods=["POST", "OPTIONS"])
 def api_pane() -> Any:
     """Switch or close the split-screen HUD pane on demand (ward_table, ward_stats, patient, or close)."""
@@ -2231,19 +2373,14 @@ def api_pane() -> Any:
         }
     elif action == "ward_table":
         wing_filter = str(payload.get("filterWing", "")).strip()
-        req_prompt = (
-            f"Show a clinical table of patients in {wing_filter}"
-            if wing_filter
-            else "Show a table with all patients on the ward"
-        )
         updates = {
             "ui_mode": "patient_stats",
             "custom_pane": {
                 "kind": "ward_table",
                 "title": "Active Ward Roster — All Monitored Patients",
-                "subtitle": "AI-Generated HTML/CSS Clinical Display",
+                "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
                 "filterWing": wing_filter,
-                "generatedHtml": rag_agent._build_fallback_pane_html_css(req_prompt),
+                "generatedHtml": "",
             },
             "patient_panel": panel,
         }
@@ -2253,11 +2390,9 @@ def api_pane() -> Any:
             "custom_pane": {
                 "kind": "ward_stats",
                 "title": "Ward Telemetry & Acuity Statistics",
-                "subtitle": "AI-Synthesized HTML/CSS Statistical View",
+                "subtitle": "Live Statistical Breakdown • Monitored Ward Beds",
                 "filterWing": "",
-                "generatedHtml": rag_agent._build_fallback_pane_html_css(
-                    "Show ward telemetry and acuity statistics with heart rate distribution bars"
-                ),
+                "generatedHtml": "",
             },
             "patient_panel": panel,
         }
@@ -2393,17 +2528,20 @@ def _broadcast_hospital_loudspeaker_page(event: dict[str, Any], is_test: bool = 
     state_manager.update_state({"last_transcript": announcement}, patient_id=active_id, announce=True)
 
     def _play_on_laptop_speaker() -> None:
-        if not _WINSOUND_AVAILABLE or winsound is None:
+        if not _WINSOUND_AVAILABLE or not _winsound_enabled or winsound is None:
             return
         with _speaker_page_lock:
             try:
                 chime_wav = _synthesize_hospital_pa_chime_wav(24000)
-                winsound.PlaySound(chime_wav, winsound.SND_MEMORY)
+                if _winsound_enabled:
+                    winsound.PlaySound(chime_wav, winsound.SND_MEMORY)
             except Exception:
                 pass
+            if not _winsound_enabled:
+                return
             try:
                 speech_bytes, mime = _synthesize_jarvis_audio(announcement, voice=TTS_VOICE)
-                if mime == "audio/wav" and speech_bytes:
+                if _winsound_enabled and mime == "audio/wav" and speech_bytes:
                     winsound.PlaySound(speech_bytes, winsound.SND_MEMORY)
             except Exception:
                 pass
@@ -2834,13 +2972,56 @@ def api_export_png() -> Any:
     )
 
 
+def _handle_terminal_command(raw_cmd: str) -> str:
+    """Process an interactive terminal command to enable, disable, or inspect winsound."""
+    cmd = raw_cmd.strip().lower()
+    if not cmd:
+        return ""
+    if cmd in {"winsound on", "sound on", "enable", "on", "unmute"}:
+        set_winsound_enabled(True)
+        return "[Terminal Audio] winsound ENABLED (terminal loudspeaker alerts active)"
+    if cmd in {"winsound off", "sound off", "disable", "off", "mute"}:
+        set_winsound_enabled(False)
+        return "[Terminal Audio] winsound DISABLED (alerts play on web portals only)"
+    if cmd in {"winsound", "w", "toggle", "sound"}:
+        new_state = set_winsound_enabled(not _winsound_enabled)
+        label = "ENABLED" if new_state else "DISABLED"
+        return f"[Terminal Audio] winsound {label}"
+    if cmd in {"status", "help", "?"}:
+        label = "ENABLED" if _winsound_enabled else "DISABLED"
+        return (
+            f"[Terminal Audio] winsound is {label}. "
+            "Commands: 'winsound on' | 'winsound off' | 'w' (toggle) | 'status'"
+        )
+    return f"[Terminal] Unknown command '{cmd}'. Type 'winsound on', 'winsound off', 'w', or 'status'."
+
+
+def _terminal_command_loop() -> None:
+    """Listen for interactive terminal commands without blocking Flask or exiting on EOF."""
+    while True:
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                time.sleep(0.5)
+                continue
+            msg = _handle_terminal_command(line)
+            if msg:
+                print(msg, flush=True)
+        except Exception:
+            time.sleep(0.5)
+
+
 if __name__ == "__main__":
     threading.Thread(target=_prewarm_tts_cache, daemon=True).start()
     _ensure_pager_daemon_running()
+    threading.Thread(target=_terminal_command_loop, daemon=True).start()
     lan_ip = get_lan_ip()
+    ws_status = "ENABLED" if _winsound_enabled else "DISABLED"
     print("============================================================")
     print("  Malcolm Clinician API + Bedside Web UI")
     print(f"  Local API / Bedside:  http://127.0.0.1:5000")
     print(f"  Phone Bedside LAN:    http://{lan_ip}:5000")
+    print(f"  Terminal winsound:    {ws_status}")
+    print("  Type 'winsound off', 'winsound on', 'w' (toggle), or 'status'")
     print("============================================================")
     app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)

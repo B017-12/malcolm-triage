@@ -11,12 +11,12 @@
       "department": "Nephrology — Renal Care",
       "protocol": "Routine Dialysis",
       "baseline_bpm": 90,
-      "current_bpm": 90,
-      "wave_state": "Awake / Normal Sinus Rhythm",
+      "current_bpm": 128,
+      "wave_state": "Sustained Sinus Tachycardia (128 BPM) — Doctor Paged",
       "conversation_stage": "idle",
-      "ui_mode": "idle",
+      "ui_mode": "patient_stats",
       "last_clinician_input": "",
-      "last_transcript": "Listening for clinician request...",
+      "last_transcript": "Hospital Paging System. Attention Doctor: Patient 1429, Mika Hämäläinen in Wing A, Room 153 has an elevated heart rate of 128 BPM. Please review telemetry or check in immediately.",
       "patient_panel": {
         "name": "Mika Hämäläinen",
         "patientId": "1429",
@@ -24,23 +24,38 @@
         "room": "153",
         "department": "Nephrology — Renal Care",
         "protocol": "Routine Dialysis",
-        "rhythm": "Normal Sinus Rhythm",
-        "telemetryDetail": "Awake • Baseline 90 BPM • Signal Locked",
+        "rhythm": "Sustained Sinus Tachycardia",
+        "telemetryDetail": "HIGH 128 BPM • DOCTOR PAGED",
         "nurseRounds": "No comments from nurse rounds.",
-        "symptom": "Patient has not reported any discomfort or odd symptoms thus far.",
-        "dispatchStatus": ""
+        "symptom": "Elevated Heart Rate (128 BPM) — Doctor Paged",
+        "dispatchStatus": "HIGH BPM (128) — ATTENDING DOCTOR PAGED TO WING A, ROOM 153"
       },
       "nurse_notes": [],
-      "patient_symptoms": [],
+      "patient_symptoms": [
+        "Elevated Heart Rate (128 BPM) — Doctor Paged"
+      ],
       "nurse_dispatched": false,
       "check_in_active": false,
       "clinician_report_ready": false,
-      "alert_level": "normal",
-      "doctor_paged": false,
+      "alert_level": "high",
+      "doctor_paged": true,
       "crash_cart_active": false,
-      "emergency_message": "",
-      "bedside_messages": [],
-      "audit_log": []
+      "emergency_message": "HIGH BPM (128 BPM) — ATTENDING DOCTOR PAGED BY MALCOLM",
+      "bedside_messages": [
+        {
+          "sender": "malcolm",
+          "text": "Mika, I notice your heart rate is elevated at 128 BPM. I have just paged your attending doctor to Wing A, Room 153. Please rest quietly and take slow breaths.",
+          "timestamp": "2026-11-17T00:05:51Z"
+        }
+      ],
+      "audit_log": [],
+      "custom_pane": {
+        "kind": "patient",
+        "title": "",
+        "subtitle": "",
+        "filterWing": "",
+        "generatedHtml": ""
+      }
     },
     "1430": {
       "patient_id": "1430",
@@ -177,6 +192,20 @@
     }
   },
   "calendar_events": [],
-  "last_page_alert": null,
-  "reply_seq": 1794862756409
+  "last_page_alert": {
+    "id": "emerg_high_1794873933179",
+    "eventId": "bpm_high_1429",
+    "severity": "high",
+    "crashCart": false,
+    "patientId": "1429",
+    "patientName": "Mika Hämäläinen",
+    "title": "HIGH BPM ALERT — DOCTOR PAGED (128 BPM)",
+    "location": "Wing A • Room 153",
+    "displayTime": "2:05 AM",
+    "reminderMinutesBefore": 0,
+    "announcement": "Hospital Paging System. Attention Doctor: Patient 1429, Mika Hämäläinen in Wing A, Room 153 has an elevated heart rate of 128 BPM. Please review telemetry or check in immediately.",
+    "timestamp": "2:05:33 AM",
+    "isTest": false
+  },
+  "reply_seq": 1794873948470
 }

@@ -228,6 +228,7 @@ def unmask_pii(text: str, state: dict[str, Any] | None = None) -> str:
         unmasked = unmasked.replace(first_tok, first_name)
         unmasked = unmasked.replace(room_tok, room_label)
 
+    unmasked = re.sub(r"\bRoom\s+Room\b", "Room", unmasked, flags=re.IGNORECASE)
     return unmasked
 
 
@@ -889,7 +890,38 @@ def _detect_pane_intent(text: str) -> dict[str, Any] | None:
             "subtitle": "Synced to Real PC Clock • 5-Min Prior Loudspeaker Paging",
         }
 
-    # 2. Statistics / analytics / metrics / comparison chart pane requests
+    # 2. Custom Generative HTML/CSS layout (ONLY when asking for a custom/bespoke visual matrix/comparison
+    #    that is NOT one of the readily available native views: ward_table, ward_stats, timetable, patient)
+    is_custom_bespoke_ui = (
+        any(v in lowered for v in ("create", "construct", "build", "generate", "render", "design"))
+        and any(
+            w in lowered
+            for w in (
+                "custom",
+                "side-by-side",
+                "side by side",
+                "matrix",
+                "comparison card",
+                "protocol breakdown",
+                "medication breakdown",
+                "triage board",
+                "acuity board",
+                "heat map",
+                "heatmap",
+            )
+        )
+    )
+    if is_custom_bespoke_ui:
+        return {
+            "action": "open",
+            "kind": "custom_html",
+            "generate_html": True,
+            "title": "AI-Synthesized Clinical View",
+            "subtitle": "Custom Generative HTML & CSS Display",
+            "filterWing": "",
+        }
+
+    # 3. Readily available Statistics / analytics / metrics pane requests (uses native React <WardStatsView />)
     stats_keywords = (
         "statistic",
         "statistics",
@@ -920,12 +952,12 @@ def _detect_pane_intent(text: str) -> dict[str, Any] | None:
         return {
             "action": "open",
             "kind": "ward_stats",
-            "generate_html": True,
+            "generate_html": False,
             "title": "Ward Telemetry & Acuity Statistics",
-            "subtitle": "AI-Synthesized HTML/CSS Statistical View",
+            "subtitle": "Live Statistical Breakdown • Monitored Ward Beds",
         }
 
-    # 3. Ward Table / All-patients roster / Custom HTML display requests
+    # 4. Readily available Ward Table / All-patients roster (uses native React <WardTableView />, NO AI regeneration!)
     has_table_word = any(
         w in lowered
         for w in (
@@ -934,13 +966,10 @@ def _detect_pane_intent(text: str) -> dict[str, Any] | None:
             "spreadsheet",
             "grid",
             "board",
-            "matrix",
             "ledger",
             "dashboard",
             "columns",
             "cards",
-            "timeline",
-            "schedule",
         )
     )
     has_show_verb = any(
@@ -991,35 +1020,32 @@ def _detect_pane_intent(text: str) -> dict[str, Any] | None:
             "protocols",
         )
     )
-    if has_table_word or (has_show_verb and has_multi_target) or (
-        any(v in lowered for v in ("create", "construct", "build", "generate", "render", "design"))
-        and any(w in lowered for w in ("pane", "panel", "display", "view", "layout", "chart", "overview"))
-    ):
+    if has_table_word or (has_show_verb and has_multi_target):
         filter_wing = ""
         title = "Active Ward Roster — All Monitored Patients"
-        subtitle = "AI-Generated HTML/CSS Clinical Display"
+        subtitle = "Real-Time Multi-Patient EHR & Telemetry Matrix"
         if "wing a" in lowered and "wing b" not in lowered and "wing c" not in lowered:
             filter_wing = "Wing A"
             title = "Wing A Patient Roster"
-            subtitle = "AI-Generated HTML/CSS • Wing A Beds (1429, 1432)"
+            subtitle = "Real-Time Multi-Patient EHR • Wing A Beds"
         elif "wing b" in lowered and "wing a" not in lowered:
             filter_wing = "Wing B"
             title = "Wing B Patient Roster"
-            subtitle = "AI-Generated HTML/CSS • Wing B Beds (1430)"
+            subtitle = "Real-Time Multi-Patient EHR • Wing B Beds"
         elif "wing c" in lowered and "wing a" not in lowered:
             filter_wing = "Wing C"
             title = "Wing C Patient Roster"
-            subtitle = "AI-Generated HTML/CSS • Wing C Beds (1431)"
+            subtitle = "Real-Time Multi-Patient EHR • Wing C Beds"
         return {
             "action": "open",
             "kind": "ward_table",
-            "generate_html": True,
+            "generate_html": False,
             "title": title,
             "subtitle": subtitle,
             "filterWing": filter_wing,
         }
 
-    # 4. Explicit request to open/show a single patient's pane/chart
+    # 5. Explicit request to open/show a single patient's readily available pane/chart
     if has_show_verb and any(w in lowered for w in ("pane", "panel", "chart", "profile", "card", "summary")):
         return {
             "action": "open",
@@ -1040,29 +1066,46 @@ def _detect_export_request(text: str, current_pane_kind: str = "patient") -> dic
     lowered = text.lower()
     wants_xlsx = bool(
         re.search(
-            r"\b(xlsx|xls|x\s*l\s*s\s*x|excel|spreadsheet\s+file|excel\s+sheet|excel\s+file)\b",
-            lowered,
-        )
-        or (
-            any(v in lowered for v in ("export", "download", "save"))
-            and "spreadsheet" in lowered
-        )
-    )
-    wants_png = bool(
-        re.search(
-            r"\b(png|p\s*n\s*g|p\s+and\s+g\s+file|image\s+file|picture\s+file|screenshot)\b",
+            r"\b(xlsx|xls|x\s*l\s*s\s*x|x\s*l\s*s|excel|spreadsheet\s+file|excel\s+sheet|excel\s+file|csv)\b",
             lowered,
         )
         or (
             any(v in lowered for v in ("export", "download", "save", "generate", "create", "make", "give me"))
-            and any(f in lowered for f in (".png", " png", "as an image", "as a picture", "as a png", "png file"))
+            and any(f in lowered for f in ("spreadsheet", "excel", "xlsx", "xls"))
+        )
+    )
+    wants_png = bool(
+        re.search(
+            r"\b(png|p\s*n\s*g|p\s+and\s+g|p&g|image\s+file|picture\s+file|screenshot|snapshot)\b",
+            lowered,
+        )
+        or (
+            any(v in lowered for v in ("export", "download", "save", "generate", "create", "make", "give me", "turn"))
+            and any(f in lowered for f in (".png", " png", "image", "picture", "photo", "ping"))
         )
     )
     has_generic_export_verb = bool(
         re.search(r"\b(export|download)\b", lowered)
         and any(
             w in lowered
-            for w in ("file", "table", "timetable", "time table", "schedule", "summary", "stats", "statistics", "chart", "report", "it", "this")
+            for w in (
+                "file",
+                "table",
+                "timetable",
+                "time table",
+                "schedule",
+                "summary",
+                "stats",
+                "statistics",
+                "chart",
+                "report",
+                "roster",
+                "pane",
+                "it",
+                "this",
+                "that",
+                "them",
+            )
         )
     )
 
@@ -1091,23 +1134,209 @@ def _detect_export_request(text: str, current_pane_kind: str = "patient") -> dic
     return {"format": fmt, "kind": kind}
 
 
+def _detect_patient_crud_request(text: str, db: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    Detect when the clinician asks to Add/Admit a new patient or Delete/Remove/Discharge a patient
+    in patients_db.json (or asks if Malcolm can add/delete patients).
+    """
+    lowered = text.lower().strip()
+    if not lowered:
+        return None
+
+    # Ignore pane close commands like "remove the pane" or "clear the screen"
+    if re.search(r"\b(?:remove|clear|delete|close)\s+(?:the\s+)?(?:pane|panel|table|display|screen|chart|view)\b", lowered):
+        return None
+    # Ignore destructive server-wipe commands ("wipe the database", "drop all tables")
+    if re.search(r"\b(?:wipe|destroy|drop|format|nuke)\s+(?:the\s+)?(?:server|database|system|hard\s+drive|backend)\b", lowered):
+        return None
+
+    # 1. Capability question: "can you add or delete patients?", "can you delete patients?"
+    if re.search(r"\b(?:can\s+you|are\s+you\s+able\s+to|do\s+you\s+have\s+the\s+ability\s+to)\b", lowered) and re.search(
+        r"\b(?:add|admit|create|register|delete|remove|discharge)\b.*\b(?:patient|patients|people)\b",
+        lowered,
+    ):
+        target_pid = _detect_target_patient_id(text, db)
+        has_named_new = bool(re.search(r"\b(?:named|called)\s+[a-zA-Z]", text, flags=re.IGNORECASE))
+        if not target_pid and not has_named_new:
+            return {"action": "capability"}
+
+    # 2. Delete / Remove / Discharge patient
+    target_pid_for_del = _detect_target_patient_id(text, db)
+    is_delete = bool(
+        re.search(
+            r"\b(?:delete|remove|discharge|drop|erase|clear\s+out|take\s+off)\b.*\b(?:patient|patients|him|her|them|mika|aino|jukka|sanna|14\d\d|from\s+the\s+(?:ward|roster|table|list|database))\b",
+            lowered,
+        )
+        or re.search(
+            r"\b(?:delete|remove|discharge)\s+(?:mika|aino|jukka|sanna|patient\s*\d+|#\d+)\b",
+            lowered,
+        )
+        or (
+            target_pid_for_del is not None
+            and re.search(r"\b(?:delete|remove|discharge)\b", lowered)
+        )
+    )
+    if is_delete:
+        target_pid = target_pid_for_del
+        if not target_pid and any(w in lowered for w in ("this patient", "current patient", "active patient", "him", "her")):
+            target_pid = str(db.get("active_patient_id", "1429"))
+        return {
+            "action": "delete",
+            "patient_id": target_pid,
+        }
+
+    # 3. Add / Admit / Register / Create a new patient
+    is_add = bool(
+        re.search(
+            r"\b(?:add|admit|register|create|enroll|put\s+in|insert)\s+(?:a\s+)?(?:new\s+)?patient\b",
+            lowered,
+        )
+        or re.search(
+            r"\bnew\s+patient\s+(?:named|called|in\s+wing|in\s+room)\b",
+            lowered,
+        )
+    )
+    if is_add:
+        # Extract Name (prefer explicit 'named/called X' first, then 'patient X')
+        name = ""
+        m_name = re.search(
+            r"\b(?:named|called|name\s+is)\s+([a-zA-ZäöåÄÖÅ]+(?:\s+[a-zA-ZäöåÄÖÅ]+){0,2}?)(?=\s+(?:in|to|at|with|for|room|wing|who|having|on|bpm|heart)\b|[,.!?]|$)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not m_name:
+            m_name = re.search(
+                r"\bpatient\s+(?!named\b|called\b|in\b|to\b|with\b|for\b|at\b|who\b)([a-zA-ZäöåÄÖÅ]+(?:\s+[a-zA-ZäöåÄÖÅ]+){0,2}?)(?=\s+(?:in|to|at|with|for|room|wing|who|having|on|bpm|heart)\b|[,.!?]|$)",
+                text,
+                flags=re.IGNORECASE,
+            )
+        if m_name:
+            cand = re.sub(r"^(?:named|called|patient)\s+", "", m_name.group(1).strip(), flags=re.IGNORECASE).strip()
+            if cand and cand.lower() not in {"named", "called", "in", "to", "with", "for", "wing", "room", "new"}:
+                name = " ".join(w.capitalize() for w in cand.split())
+        if not name:
+            name = "Alex Rivera"
+
+        # Extract Wing
+        wing = "Wing B"
+        m_wing = re.search(r"\bwing\s+([a-cA-C])\b", text, flags=re.IGNORECASE)
+        if m_wing:
+            wing = f"Wing {m_wing.group(1).upper()}"
+
+        # Extract Room
+        room = "Room 210"
+        m_room = re.search(r"\broom\s+(\d{2,4})\b", text, flags=re.IGNORECASE)
+        if m_room:
+            room = f"Room {m_room.group(1)}"
+
+        # Extract BPM
+        bpm = 82
+        m_bpm = re.search(r"\b(\d{2,3})\s*bpm\b", lowered)
+        if m_bpm:
+            bpm = max(45, min(180, int(m_bpm.group(1))))
+
+        # Extract Condition / Department
+        condition = "General Clinical Observation"
+        department = "Internal Medicine"
+        protocol = "Continuous Telemetry & Q4H Vitals"
+        m_cond = re.search(
+            r"\b(?:with|for|having|suffering\s+from|diagnosed\s+with)\s+([a-zA-Z0-9\s\-]+?)(?=\s+(?:in\s+wing|in\s+room|at\s+\d+\s*bpm|and\s+)|[,.!?]|$)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if m_cond:
+            raw_c = m_cond.group(1).strip()
+            if raw_c and len(raw_c) <= 48:
+                condition = raw_c[0].upper() + raw_c[1:]
+                c_low = condition.lower()
+                if any(k in c_low for k in ("cardiac", "heart", "chest", "tachycardia", "arrhythmia", "valve")):
+                    department = "Cardiology & Telemetry"
+                    protocol = "Continuous 12-Lead ECG & Cardiac Enzymes"
+                elif any(k in c_low for k in ("pneumonia", "asthma", "copd", "respiratory", "breath", "lung")):
+                    department = "Pulmonology & Respiratory Care"
+                    protocol = "SpO2 Monitoring & Nebulizer Therapy"
+                elif any(k in c_low for k in ("renal", "dialysis", "kidney")):
+                    department = "Nephrology — Renal Care"
+                    protocol = "Routine Dialysis & Fluid Balance"
+                elif any(k in c_low for k in ("neuro", "concussion", "stroke", "seizure", "head")):
+                    department = "Neurology — Trauma Unit"
+                    protocol = "Q2H Neuro Checks & Cranial Telemetry"
+
+        return {
+            "action": "add",
+            "name": name,
+            "wing": wing,
+            "room": room,
+            "condition": condition,
+            "department": department,
+            "protocol": protocol,
+            "baseline_bpm": bpm,
+        }
+
+    return None
+
+
 def _detect_impractical_request_fallback(text: str, state: dict[str, Any] | None = None) -> str | None:
-    """Offline/deterministic Jarvis fallback when the clinician asks for something impractical or impossible."""
+    """Offline/deterministic Jarvis fallback when the clinician asks for something genuinely impractical or impossible."""
     lowered = text.lower()
     name = (state or {}).get("name", "Mika Hämäläinen")
     room = (state or {}).get("room", "Room 153")
 
-    if any(k in lowered for k in ("mri", "ct scan", "x-ray", "xray", "ultrasound", "3d scan", "hologram", "brain scan")):
-        return (
-            f"I'm afraid rendering a live imaging scan or 3D hologram is a bit outside my current console hardware, doctor. "
-            f"However, I can immediately pull up {name}'s full clinical chart and live telemetry pane, or display the ward statistics table—would that work instead?"
+    if any(
+        k in lowered
+        for k in (
+            "mri",
+            "ct scan",
+            "cat scan",
+            "x-ray",
+            "xray",
+            "ultrasound",
+            "3d scan",
+            "hologram",
+            "brain scan",
+            "pet scan",
+            "echocardiogram",
+            "angiogram",
         )
-    if any(k in lowered for k in ("draw blood", "intubate", "defibrillate", "perform surgery", "inject", "administer iv", "push epinephrine", "give morphine")):
+    ):
         return (
-            f"As much as I'd like to lend a hand, I lack the physical limbs to perform bedside procedures or administer IV medication myself, sir. "
+            f"I'm afraid rendering a live radiology scan or 3D hologram is outside my console hardware, doctor. "
+            f"However, I can immediately pull up {name}'s clinical chart and live telemetry pane, or display the ward statistics—would that work instead?"
+        )
+    if any(
+        k in lowered
+        for k in (
+            "draw blood",
+            "intubate",
+            "defibrillate",
+            "perform surgery",
+            "operate on",
+            "inject",
+            "administer",
+            "infuse",
+            "push epinephrine",
+            "give morphine",
+            "morphine",
+            "fentanyl",
+            "epinephrine",
+            "insert catheter",
+            "biopsy",
+            "ventilator",
+            "prescribe controlled",
+            "dispense medication",
+            "amputate",
+            "appendectomy",
+            "transplant",
+            "teleport",
+            "clone",
+            "edit dna",
+        )
+    ):
+        return (
+            f"As much as I'd like to lend a hand, I cannot physically perform bedside procedures or administer medications from the console, sir. "
             f"Shall I dispatch a floor nurse to {room} right away, or pull up {name}'s protocol chart for you?"
         )
-    if any(k in lowered for k in ("camera", "video feed", "cctv", "livestream", "watch the room")):
+    if any(k in lowered for k in ("camera", "video feed", "cctv", "livestream", "watch the room", "spy on")):
         return (
             f"We don't stream live video feeds from the patient rooms for privacy reasons, doctor, so that's a no-go. "
             f"If you'd like eyes on {name}, I can initiate a live bedside voice check-in or open the real-time ECG telemetry pane instead—would you prefer one of those?"
@@ -1115,34 +1344,63 @@ def _detect_impractical_request_fallback(text: str, state: dict[str, Any] | None
     if any(k in lowered for k in ("wake everyone", "wake all patients", "check in on all four at once")):
         return (
             "Waking the entire ward at once—especially Sanna Laine while she's resting under concussion precautions—would be rather impractical, doctor. "
-            "Would you like me to bring up the 4-patient ward table first so we can pick which awake patient to check in on?"
+            "Would you like me to bring up the ward patient table first so we can pick which awake patient to check in on?"
         )
-    if any(k in lowered for k in ("make coffee", "brew coffee", "bring me coffee", "espresso", "order lunch", "order food")):
+    if any(
+        k in lowered
+        for k in (
+            "make coffee",
+            "brew coffee",
+            "bring me coffee",
+            "espresso",
+            "order lunch",
+            "order food",
+            "order pizza",
+            "call an uber",
+            "book a flight",
+            "play music",
+        )
+    ):
         return (
-            "I'm still waiting on the hospital board to wire me into the breakroom espresso machine, doctor, so I can't quite pull that off yet. "
+            "I'm still waiting on the hospital board to wire me into the breakroom espresso machine and outside delivery services, doctor, so I can't quite pull that off yet. "
             "In the meantime, would you like me to put the ward patient table or live telemetry statistics up on your pane?"
+        )
+    if re.search(r"\b(?:wipe|destroy|drop|format|nuke|hack)\s+(?:the\s+)?(?:server|database|system|hard\s+drive|backend|hospital)\b", lowered):
+        return (
+            "I'm afraid wiping the hospital backend server or tampering with core infrastructure is strictly off-limits, doctor. "
+            "If you'd like to discharge a specific patient from the active ward roster or reset the demo state, just let me know which patient."
         )
     return None
 
 
 def _detect_target_patient_id(text: str, db: dict[str, Any]) -> str | None:
-    """Detect which patient ID in patients_db.json the clinician is referring to (including phonetic ASR variants)."""
+    """Detect which patient ID in patients_db.json the clinician is referring to (including phonetic ASR variants and newly added patients)."""
     lowered = text.lower()
     patients = db.get("patients", {})
 
-    # 1. Explicit patient ID match (1429, 1430, 1431, 1432)
+    # 1. Explicit patient ID match (e.g. 1429, 1430, 1431, 1432, 1433...)
     for pid in patients.keys():
         if re.search(rf"\b{re.escape(pid)}\b", lowered):
             return pid
 
-    # 2. Room number match (153, 204, 312, 118)
+    # 2. Room number match (e.g. 153, 204, 312, 118, 210...)
     for pid, pdata in patients.items():
         room = str(pdata.get("room", ""))
         room_num = re.sub(r"^Room\s+", "", room, flags=re.IGNORECASE).strip()
         if room_num and re.search(rf"\broom\s+{re.escape(room_num)}\b", lowered):
             return pid
 
-    # 3. Phonetic & exact patient name match
+    # 3. Dynamic exact/partial name match for ANY patient currently in db["patients"] (including newly added patients!)
+    for pid, pdata in patients.items():
+        full_name = str(pdata.get("name", "")).strip().lower()
+        if full_name and full_name in lowered:
+            return pid
+        parts = [p for p in full_name.split() if len(p) >= 3 and p not in {"patient", "new"}]
+        for part in parts:
+            if re.search(rf"\b{re.escape(part)}\b", lowered):
+                return pid
+
+    # 4. Phonetic Finnish patient name match (1429-1432)
     phonetic_name_map: dict[str, tuple[str, ...]] = {
         "1429": (
             "mika",
@@ -1189,14 +1447,14 @@ def _detect_target_patient_id(text: str, db: dict[str, Any]) -> str | None:
                 if re.search(rf"\b{re.escape(token)}\b", lowered):
                     return pid
 
-    # 4. Unique Wing / Condition cues when clinician refers to a patient by clinical feature
-    if any(k in lowered for k in ("wing c", "wing see", "tachycardia", "pneumonia", "ceftriaxone", "104 bpm")):
+    # 5. Unique Wing / Condition cues when clinician refers to a patient by clinical feature
+    if "1431" in patients and any(k in lowered for k in ("wing c", "wing see", "tachycardia", "pneumonia", "ceftriaxone", "104 bpm")):
         return "1431"
-    if any(k in lowered for k in ("wing b", "mitral valve", "cardiothoracic")):
+    if "1430" in patients and any(k in lowered for k in ("wing b", "mitral valve", "cardiothoracic")):
         return "1430"
-    if any(k in lowered for k in ("concussion", "photophobia", "room 118", "neuro check")):
+    if "1432" in patients and any(k in lowered for k in ("concussion", "photophobia", "room 118", "neuro check")):
         return "1432"
-    if "dialysis" in lowered or "nephrology" in lowered:
+    if "1429" in patients and ("dialysis" in lowered or "nephrology" in lowered):
         return "1429"
 
     return None
@@ -1873,7 +2131,8 @@ class LocalRAGAgent:
     ) -> str:
         """
         Real-time Generative UI: Ask Gemini 3.5 Flash-Lite to construct bespoke HTML & CSS
-        (<style>...</style><div class="hud-root">...</div>) on demand for whatever the clinician asked.
+        (<style>...</style><div class="hud-root">...</div>) on demand ONLY for custom visual comparisons/matrices
+        that are not already covered by the native React views.
         """
         if _is_timetable_or_calendar_query(clinician_request):
             return render_timetable_html_css()
@@ -1885,7 +2144,7 @@ class LocalRAGAgent:
         sys_prompt = (
             "You are Malcolm's real-time Generative UI Engine for a hospital clinical HUD console. "
             "Construct raw, compact HTML and CSS (<style>...</style> followed by <div class=\"hud-root\">...</div>) "
-            "that immediately renders whatever visual display, table, bar chart, statistical breakdown, comparison matrix, or dashboard the doctor asked for.\n\n"
+            "that immediately renders the custom visual comparison, matrix, or breakdown the doctor asked for.\n\n"
             "PRE-LOADED BASE CLASSES (already styled in the host frame—use them directly and only write <style> for custom additions!):\n"
             "- `.hud-root`: full-height flex column container\n"
             "- `.hud-kicker`: uppercase monospace label (11px, #8b95a7)\n"
@@ -1896,20 +2155,22 @@ class LocalRAGAgent:
             "- `.hud-footer`: rose-tinted bottom summary banner\n\n"
             "STRICT RULES:\n"
             "1. Output ONLY a short `<style>...</style>` block (for custom classes/layout, max 12 lines) followed by `<div class=\"hud-root\">...</div>`. No markdown fences, no <html>/<head>/<body>.\n"
-            "2. Keep HTML concise and clean so it generates in under 1 second and fits on one screen without scrolling.\n"
-            "3. Interactive Hooks: Add `onclick=\"window.selectPatient('1429')\"` (or '1430', '1431', '1432') on patient rows/cards/bars.\n"
-            "4. Clinical Accuracy: Use ONLY the pseudonymized patient tokens ([PATIENT_1429], [PATIENT_1430], [PATIENT_1431], [PATIENT_1432]) and exact numbers below.\n\n"
+            "2. Keep HTML concise and clean so it generates in under 1 second and fits on one screen.\n"
+            "3. Interactive Hooks: Add `onclick=\"window.selectPatient('1429')\"` (or the patient's ID) on patient rows/cards/bars.\n"
+            "4. READ-ONLY CLINICAL DATA ONLY — NO FAKE BUTTONS: NEVER output `<button>`, `<input>`, `<select>`, or `<form>` elements that pretend to delete records, clear backend state, administer drugs, or run hardware scans. Only display real clinical data from the Multi-Patient Ward Database below.\n"
+            "5. Clinical Accuracy: Use ONLY the pseudonymized patient tokens and exact numbers below.\n\n"
             f"Multi-Patient Ward Database:\n{all_context}\n\n"
             f"Computed Ward Statistics:\n"
             f"- Total: {stats.get('totalPatients', 4)} patients | Mean HR: {stats.get('meanBpm', 83.5)} BPM | Range: {stats.get('minBpm', 64)}–{stats.get('maxBpm', 104)} BPM (Spread {stats.get('bpmSpread', 40)} BPM)\n"
-            f"- Min HR: [PATIENT_1432] (64 BPM, Sleeping) | Max HR: [PATIENT_1431] (104 BPM, Mild Sinus Tachycardia)\n"
-            f"- Wakefulness: {stats.get('awakeCount', 3)} Awake / {stats.get('sleepingCount', 1)} Sleeping | Symptomatic: {stats.get('symptomaticCount', 3)} | Tachycardia: {stats.get('tachycardiaCount', 1)}\n"
-            f"- Wings: Wing A (2 beds, mean 77.0 BPM), Wing B (1 bed, mean 76.0 BPM), Wing C (1 bed, mean 104.0 BPM)"
+            f"- Wakefulness: {stats.get('awakeCount', 3)} Awake / {stats.get('sleepingCount', 1)} Sleeping | Symptomatic: {stats.get('symptomaticCount', 3)} | Tachycardia: {stats.get('tachycardiaCount', 1)}"
         )
-        user_msg = f"Construct the HTML and CSS display for this doctor request: {clinician_request}"
+        user_msg = f"Construct the read-only HTML and CSS clinical data display for this doctor request: {clinician_request}"
         generated_html, _ = self._query_gemini_html(sys_prompt, user_msg)
         if generated_html and "<div" in generated_html.lower():
-            return generated_html
+            # Sanitize out any hallucinated <button>, <input>, or <form> elements so fake UI controls can never appear
+            cleaned_html = re.sub(r"<button\b[^>]*>.*?</button>", "", generated_html, flags=re.IGNORECASE | re.DOTALL)
+            cleaned_html = re.sub(r"<(?:input|select|textarea|form)\b[^>]*>", "", cleaned_html, flags=re.IGNORECASE)
+            return cleaned_html
         return self._build_fallback_pane_html_css(clinician_request, data)
 
     def _query_gemini_with_rescore(
@@ -1929,28 +2190,23 @@ class LocalRAGAgent:
         clean_input = user_prompt.strip()
         self._last_pane_directive = "keep"
         rescore_directive = (
-            "\n\nHUD PANE CONTROL, FILE EXPORT (.XLSX / .PNG) & IMPRACTICAL/IMPOSSIBLE REQUEST RULES:\n"
-            "1. ON-DEMAND GENERATIVE HTML+CSS DISPLAY PANE & .XLSX / .PNG FILE EXPORT: You directly control a real-time Generative HTML+CSS HUD pane on the right side of the doctor's screen, "
-            "AND you HAVE built-in .xlsx (Excel spreadsheet) and .png (high-resolution formatted image on a plain white background) file generation and export capabilities! "
-            "You CAN construct and render any HTML/CSS table, shift timetable, bar chart, heart-rate graph, statistical breakdown, or custom dashboard on demand, "
-            "AND you CAN generate, export, and download formatted .xlsx or .png files of any table, timetable, statistics view, or patient summary on a plain white background! "
-            "NEVER say a bar chart, table, visual display, .xlsx file, Excel export, or .png image export is beyond your console capabilities—always confirm that you have just generated it and started the .xlsx or .png download right now.\n"
-            "   - Choose PANE: ward_table when the doctor asks to see a table, roster, grid, board, or list of patients.\n"
-            "   - Choose PANE: ward_stats when the doctor asks for statistics, metrics, analytics, averages, bar charts, graphs, or a vitals comparison.\n"
-            "   - Choose PANE: custom_html when the doctor asks to create, build, or display any other custom visual layout/matrix/comparison on the pane.\n"
-            "   - Choose PANE: patient_1429 (or patient_1430, patient_1431, patient_1432) when the doctor asks to pull up or view a single patient's standard chart.\n"
-            "   - Choose PANE: close when the doctor asks to close, hide, dismiss, or put away the pane/table/stats.\n"
-            "   - Choose PANE: keep otherwise.\n"
-            "2. IMPRACTICAL OR IMPOSSIBLE REQUESTS & PROACTIVE ALTERNATIVES: If the doctor asks you to do something genuinely impractical, "
-            "physically impossible for a software AI, or unavailable in our telemetry/EHR system (e.g., physically drawing blood, "
-            "administering IV meds, performing surgery, showing an MRI/CT/X-ray scan, streaming a live room video camera feed, projecting a 3D hologram in mid-air, waking the entire ward at once, "
-            "or making coffee/food), casually and good-naturedly tell the doctor that that's impractical or not something you can pull off from the console. "
-            "Then immediately ask if a practical alternative you CAN do right now (such as generating a live 4-patient ward table, "
-            "displaying ward telemetry statistics and bar charts, opening a patient's chart, or dispatching a floor nurse to handle it) would work instead.\n\n"
+            "\n\nMALCOLM SYSTEM CAPABILITIES, NATIVE HUD PANE CONTROL & IMPOSSIBLE REQUEST RULES:\n"
+            "1. BUILT-IN SYSTEM CAPABILITIES (YOU CAN DO ALL OF THESE!):\n"
+            "   - NATIVE HUD VIEWS: You control the right-hand split-screen pane with 4 readily-available native views: "
+            "Patient Chart (`patient_1429`, `patient_1430`, `patient_1431`, `patient_1432`), Active Ward Roster Table (`ward_table`), "
+            "Ward Telemetry & Acuity Statistics (`ward_stats`), and Shift Timetable (`keep` when timetable handler runs).\n"
+            "   - CUSTOM HTML/CSS VIEWS (`custom_html`): Only use `PANE: custom_html` when the doctor asks for a bespoke visual comparison/matrix that is NOT a standard patient chart, ward table, or ward statistics view.\n"
+            "   - .XLSX & .PNG FILE EXPORT: You HAVE built-in `.xlsx` (Excel spreadsheet) and `.png` (high-res image on a plain white background) export & download capabilities! NEVER say you cannot export or generate `.xlsx` or `.png` files.\n"
+            "   - ADD & DELETE PATIENTS: You HAVE built-in database access to admit/add new patients and discharge/delete/remove patients from the live ward roster! NEVER say you cannot add or delete patients.\n"
+            "   - LOUDSPEAKER PAGING & TIMERS: You HAVE built-in hospital loudspeaker paging and can page the doctor in X seconds (e.g., 'in 10 seconds'), X minutes, or 5 minutes prior to scheduled timetable tasks.\n"
+            "2. IMPOSSIBLE / UNSUPPORTED REQUESTS (NEVER PRETEND OR GENERATE FAKE UI FOR THESE!):\n"
+            "   - If the doctor asks you to do something physically impossible or unsupported by our console (e.g., drawing blood, administering IV drugs, performing surgery, showing MRI/CT/X-ray/ultrasound scans, streaming live room CCTV video, projecting a 3D hologram, wiping/hacking the hospital server, or making coffee/food):\n"
+            "   - You MUST set `PANE: keep` (NEVER open `custom_html` or pretend to build a UI with buttons for an impossible task!).\n"
+            "   - Casually and honestly tell the doctor that you cannot do that from the console, and suggest a real capability you CAN do right now instead.\n\n"
             "IMPORTANT — PASS-2 CONTEXTUAL STT RESCORING + RESPONSE FORMAT:\n"
             "The doctor's input comes from live hospital Speech-to-Text and may have clipped opening words, "
             "spoken hesitations ('er', 'uh', 'um'), homophones ('wing see' -> 'Wing C', 'cardia' -> 'tachycardia', "
-            "'said you'll in' -> 'scheduled in', 'on particularly' -> 'I'm particularly'), or phonetic Finnish names "
+            "'said you'll in' -> 'scheduled in', 'p and g' -> 'PNG', 'x l s x' -> 'XLSX'), or phonetic Finnish names "
             "('Aham linen' / 'Hama linen' -> [PATIENT_1429], 'Jukka' -> [PATIENT_1431], 'Aino' -> [PATIENT_1430], 'Sanna' -> [PATIENT_1432]).\n"
             "Output EXACTLY three labeled sections:\n"
             "TRANSCRIPT: <the doctor's intended utterance, grammar/homophones repaired, filler words removed, and properly punctuated>\n"
@@ -1966,7 +2222,7 @@ class LocalRAGAgent:
             return clean_input, None, engine_used
 
         m_pane = re.search(
-            r"PANE:\s*(keep|close|ward_table|ward_stats|custom_html|patient_1429|patient_1430|patient_1431|patient_1432)",
+            r"PANE:\s*(keep|close|ward_table|ward_stats|custom_html|patient_\d+)",
             raw_out,
             flags=re.IGNORECASE,
         )
@@ -1998,12 +2254,15 @@ class LocalRAGAgent:
                 rescored,
                 flags=re.IGNORECASE,
             ).strip()
-            # Preserve exact input when already cleanly punctuated with '?' (e.g., deterministic test suite)
             if clean_input.endswith("?") or not rescored or len(rescored) < 3:
                 rescored = clean_input
+            if any(
+                refusal in reply_text.lower()
+                for refusal in ("i cannot", "i can't", "i'm afraid", "outside my", "unable to", "no-go", "off-limits", "not something i can")
+            ):
+                self._last_pane_directive = "keep"
             return rescored, reply_text, engine_used
 
-        # Fallback if model omitted labels
         stripped = re.sub(r"^TRANSCRIPT:\s*", "", raw_out, flags=re.IGNORECASE).strip()
         stripped = re.sub(
             r"\bPANE:\s*(?:keep|close|ward_table|ward_stats|custom_html|patient_\d+)\b",
@@ -2021,9 +2280,13 @@ class LocalRAGAgent:
         current_state: dict[str, Any],
         generated_html: str = "",
     ) -> dict[str, Any]:
-        """Compute ui_mode and custom_pane updates from deterministic pane_intent + Gemini PANE directive + AI-generated HTML/CSS."""
+        """Compute ui_mode and custom_pane updates using native React views first and blocking fake UIs on impossible requests."""
         updates: dict[str, Any] = {}
         directive = (self._last_pane_directive or "keep").lower()
+
+        # Hard block: NEVER open or generate a pane when the request is impossible/impractical!
+        if _detect_impractical_request_fallback(text, current_state) is not None:
+            return updates
 
         # 1. Explicit deterministic intent takes top priority for instant reliability
         if pane_intent:
@@ -2040,11 +2303,12 @@ class LocalRAGAgent:
                 return updates
             if action == "open":
                 kind = str(pane_intent.get("kind", "patient"))
-                html_code = (
-                    generated_html
-                    if generated_html
-                    else (self._build_fallback_pane_html_css(text) if pane_intent.get("generate_html") else "")
-                )
+                # Only generate HTML when kind is 'custom_html' or 'timetable'
+                html_code = ""
+                if kind == "timetable":
+                    html_code = generated_html or render_timetable_html_css()
+                elif kind == "custom_html" and pane_intent.get("generate_html"):
+                    html_code = generated_html or self.generate_pane_html_css(text)
                 updates["ui_mode"] = "patient_stats"
                 updates["custom_pane"] = {
                     "kind": kind,
@@ -2055,7 +2319,7 @@ class LocalRAGAgent:
                 }
                 return updates
 
-        # 2. Gemini's single-pass PANE directive
+        # 2. Gemini's single-pass PANE directive (uses native React views for ward_table, ward_stats, and patient!)
         if directive == "close":
             updates["ui_mode"] = "idle"
             updates["custom_pane"] = {
@@ -2067,37 +2331,41 @@ class LocalRAGAgent:
             }
             return updates
         if directive == "ward_table":
-            html_code = generated_html or self.generate_pane_html_css(text)
             updates["ui_mode"] = "patient_stats"
             updates["custom_pane"] = {
                 "kind": "ward_table",
                 "title": "Active Ward Roster — All Monitored Patients",
-                "subtitle": "AI-Generated HTML/CSS Clinical Display",
+                "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
                 "filterWing": "",
-                "generatedHtml": html_code,
+                "generatedHtml": "",
             }
             return updates
         if directive == "ward_stats":
-            html_code = generated_html or self.generate_pane_html_css(text)
             updates["ui_mode"] = "patient_stats"
             updates["custom_pane"] = {
                 "kind": "ward_stats",
                 "title": "Ward Telemetry & Acuity Statistics",
-                "subtitle": "AI-Synthesized HTML/CSS Statistical View",
+                "subtitle": "Live Statistical Breakdown • Monitored Ward Beds",
                 "filterWing": "",
-                "generatedHtml": html_code,
+                "generatedHtml": "",
             }
             return updates
         if directive == "custom_html":
-            html_code = generated_html or self.generate_pane_html_css(text)
-            updates["ui_mode"] = "patient_stats"
-            updates["custom_pane"] = {
-                "kind": "custom_html",
-                "title": "AI-Synthesized Clinical View",
-                "subtitle": "Custom Generative HTML & CSS Display",
-                "filterWing": "",
-                "generatedHtml": html_code,
-            }
+            # Only allow custom_html if the clinician actually asked for a visual display/comparison/matrix
+            lowered = text.lower()
+            if any(
+                w in lowered
+                for w in ("compare", "comparison", "matrix", "custom", "breakdown", "side-by-side", "side by side", "chart", "display", "visual", "layout")
+            ):
+                html_code = generated_html or self.generate_pane_html_css(text)
+                updates["ui_mode"] = "patient_stats"
+                updates["custom_pane"] = {
+                    "kind": "custom_html",
+                    "title": "AI-Synthesized Clinical View",
+                    "subtitle": "Custom Generative HTML & CSS Display",
+                    "filterWing": "",
+                    "generatedHtml": html_code,
+                }
             return updates
         if directive.startswith("patient_"):
             updates["ui_mode"] = "patient_stats"
@@ -2589,6 +2857,153 @@ class LocalRAGAgent:
                 "state": state_manager.load_state(active_id),
             }
 
+        # 0.1. Patient Add / Admit & Delete / Discharge CRUD requests
+        crud_req = _detect_patient_crud_request(text, db)
+        if crud_req:
+            c_action = crud_req.get("action")
+            if c_action == "capability":
+                state = state_manager.load_state(active_id)
+                telemetry = self._get_telemetry_for_state(state)
+                panel = self.synthesize_patient_panel(state, telemetry)
+                reply = (
+                    "Yes, doctor—I have full read and write access to the live ward roster. "
+                    "Just tell me a patient's name, wing, room, and condition to admit a new patient, "
+                    "or tell me which patient ID or name you'd like to discharge and remove."
+                )
+                self._record_clinician_turn(text, reply)
+                updated = state_manager.update_state(
+                    {
+                        "ui_mode": "patient_stats",
+                        "custom_pane": {
+                            "kind": "ward_table",
+                            "title": "Active Ward Roster — All Monitored Patients",
+                            "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
+                            "filterWing": "",
+                            "generatedHtml": "",
+                        },
+                        "last_clinician_input": text,
+                        "last_transcript": reply,
+                        "patient_panel": panel,
+                    },
+                    patient_id=active_id,
+                )
+                return {
+                    "reply": reply,
+                    "engine": self.get_engine_label(),
+                    "stage": updated.get("conversation_stage", "idle"),
+                    "check_in_active": bool(updated.get("check_in_active")),
+                    "state": state_manager.load_state(active_id),
+                }
+
+            if c_action == "add":
+                created = state_manager.add_patient(
+                    name=str(crud_req.get("name", "Alex Rivera")),
+                    wing=str(crud_req.get("wing", "Wing B")),
+                    room=str(crud_req.get("room", "Room 210")),
+                    condition=str(crud_req.get("condition", "General Clinical Observation")),
+                    department=str(crud_req.get("department", "Internal Medicine")),
+                    protocol=str(crud_req.get("protocol", "Continuous Telemetry & Q4H Vitals")),
+                    baseline_bpm=int(crud_req.get("baseline_bpm", 82)),
+                )
+                new_id = str(created.get("patient_id", "1433"))
+                total_count = len(state_manager.load_db().get("patients", {}))
+                reply = (
+                    f"Right away, doctor. I've admitted Patient {new_id}, {created.get('name')} "
+                    f"to {created.get('wing')}, {created.get('room')} ({created.get('condition')}, "
+                    f"{created.get('current_bpm', 82)} BPM). The live ward roster now has {total_count} monitored patients."
+                )
+                self._record_clinician_turn(text, reply)
+                updated = state_manager.update_state(
+                    {
+                        "ui_mode": "patient_stats",
+                        "custom_pane": {
+                            "kind": "ward_table",
+                            "title": "Active Ward Roster — All Monitored Patients",
+                            "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
+                            "filterWing": "",
+                            "generatedHtml": "",
+                        },
+                        "last_clinician_input": text,
+                        "last_transcript": reply,
+                    },
+                    patient_id=new_id,
+                )
+                return {
+                    "reply": reply,
+                    "engine": self.get_engine_label(),
+                    "stage": updated.get("conversation_stage", "idle"),
+                    "check_in_active": False,
+                    "state": state_manager.load_state(new_id),
+                }
+
+            if c_action == "delete":
+                del_pid = crud_req.get("patient_id")
+                patients_now = db.get("patients", {})
+                if not del_pid or del_pid not in patients_now:
+                    names_list = ", ".join(f"#{k} {v.get('name')}" for k, v in sorted(patients_now.items()))
+                    reply = (
+                        f"Which patient would you like me to discharge and remove from the roster, doctor? "
+                        f"Currently monitored: {names_list}."
+                    )
+                    state = state_manager.load_state(active_id)
+                    updated = state_manager.update_state(
+                        {
+                            "ui_mode": "patient_stats",
+                            "custom_pane": {
+                                "kind": "ward_table",
+                                "title": "Active Ward Roster — All Monitored Patients",
+                                "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
+                                "filterWing": "",
+                                "generatedHtml": "",
+                            },
+                            "last_clinician_input": text,
+                            "last_transcript": reply,
+                        },
+                        patient_id=active_id,
+                    )
+                    return {
+                        "reply": reply,
+                        "engine": self.get_engine_label(),
+                        "stage": updated.get("conversation_stage", "idle"),
+                        "check_in_active": False,
+                        "state": state_manager.load_state(active_id),
+                    }
+
+                deleted_entry, next_active = state_manager.delete_patient(str(del_pid))
+                next_id = str(next_active.get("patient_id", state_manager.get_active_patient_id()))
+                rem_count = len(state_manager.load_db().get("patients", {}))
+                del_name = (deleted_entry or {}).get("name", f"Patient {del_pid}")
+                reply = (
+                    f"Done, doctor. I've discharged and removed Patient {del_pid}, {del_name} "
+                    f"from the active ward database. We now have {rem_count} monitored patient{'s' if rem_count != 1 else ''} on the floor."
+                )
+                self._record_clinician_turn(text, reply)
+                telemetry = self._get_telemetry_for_state(next_active)
+                panel = self.synthesize_patient_panel(next_active, telemetry)
+                updated = state_manager.update_state(
+                    {
+                        "ui_mode": "patient_stats",
+                        "custom_pane": {
+                            "kind": "ward_table",
+                            "title": "Active Ward Roster — All Monitored Patients",
+                            "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
+                            "filterWing": "",
+                            "generatedHtml": "",
+                        },
+                        "last_clinician_input": text,
+                        "last_transcript": reply,
+                        "patient_panel": panel,
+                    },
+                    patient_id=next_id,
+                )
+                return {
+                    "reply": reply,
+                    "engine": self.get_engine_label(),
+                    "stage": updated.get("conversation_stage", "idle"),
+                    "check_in_active": False,
+                    "state": state_manager.load_state(next_id),
+                }
+
         # 0.2. Explicit .xlsx / .png file generation & export requests
         current_state_for_exp = state_manager.load_state(active_id)
         current_pane_kind = str((current_state_for_exp.get("custom_pane") or {}).get("kind") or "patient")
@@ -2616,9 +3031,9 @@ class LocalRAGAgent:
                 pane_obj = {
                     "kind": "ward_stats",
                     "title": "Ward Telemetry & Acuity Statistics",
-                    "subtitle": "AI-Synthesized HTML/CSS Statistical View",
+                    "subtitle": "Live Statistical Breakdown • Monitored Ward Beds",
                     "filterWing": "",
-                    "generatedHtml": self._build_fallback_pane_html_css("ward statistics", db),
+                    "generatedHtml": "",
                 }
             elif exp_kind == "ward_table":
                 pane_obj = {
@@ -2626,7 +3041,7 @@ class LocalRAGAgent:
                     "title": "Active Ward Roster — All Monitored Patients",
                     "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
                     "filterWing": "",
-                    "generatedHtml": self._build_fallback_pane_html_css("ward table", db),
+                    "generatedHtml": "",
                 }
             else:
                 pane_obj = current_state_for_exp.get("custom_pane") or {
@@ -2645,7 +3060,7 @@ class LocalRAGAgent:
             kind_label = {
                 "timetable": "clinician shift timetable",
                 "ward_stats": "ward telemetry statistics summary",
-                "ward_table": "4-patient ward roster table",
+                "ward_table": "ward roster table",
                 "patient": f"clinical summary for {current_state_for_exp.get('name', 'the active patient')}",
             }.get(exp_kind, "clinical table")
 
@@ -2678,6 +3093,28 @@ class LocalRAGAgent:
                 "stage": updated.get("conversation_stage", "idle"),
                 "check_in_active": bool(updated.get("check_in_active")),
                 "export_request": export_trigger,
+                "state": state_manager.load_state(active_id),
+            }
+
+        # 0.3. Hard Gate for Genuinely Impossible / Impractical Requests (Never generate fake UIs!)
+        impractical_reply = _detect_impractical_request_fallback(text, current_state_for_exp)
+        if impractical_reply is not None:
+            telemetry = self._get_telemetry_for_state(current_state_for_exp)
+            panel = self.synthesize_patient_panel(current_state_for_exp, telemetry)
+            self._record_clinician_turn(text, impractical_reply)
+            updated = state_manager.update_state(
+                {
+                    "last_clinician_input": text,
+                    "last_transcript": impractical_reply,
+                    "patient_panel": panel,
+                },
+                patient_id=active_id,
+            )
+            return {
+                "reply": impractical_reply,
+                "engine": self.get_engine_label(),
+                "stage": updated.get("conversation_stage", "idle"),
+                "check_in_active": bool(updated.get("check_in_active")),
                 "state": state_manager.load_state(active_id),
             }
 
@@ -2771,7 +3208,7 @@ class LocalRAGAgent:
 
         # 1. Cross-patient database queries ("list all patients", "show me a table", "give me statistics", etc.)
         if _is_multi_patient_overview_query(text) or (
-            pane_intent and pane_intent.get("kind") in {"ward_table", "ward_stats"}
+            pane_intent and pane_intent.get("kind") in {"ward_table", "ward_stats", "custom_html"}
         ):
             html_box: dict[str, str] = {}
             html_thread: threading.Thread | None = None
