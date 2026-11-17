@@ -1,5 +1,5 @@
 {
-  "active_patient_id": "1429",
+  "active_patient_id": "1430",
   "patients": {
     "1429": {
       "patient_id": "1429",
@@ -11,12 +11,12 @@
       "department": "Nephrology — Renal Care",
       "protocol": "Routine Dialysis",
       "baseline_bpm": 90,
-      "current_bpm": 128,
-      "wave_state": "Sustained Sinus Tachycardia (128 BPM) — Doctor Paged",
+      "current_bpm": 90,
+      "wave_state": "Awake / Normal Sinus Rhythm",
       "conversation_stage": "idle",
       "ui_mode": "patient_stats",
-      "last_clinician_input": "",
-      "last_transcript": "Hospital Paging System. Attention Doctor: Patient 1429, Mika Hämäläinen in Wing A, Room 153 has an elevated heart rate of 128 BPM. Please review telemetry or check in immediately.",
+      "last_clinician_input": "I would like to examine patient number one four thrary zero first",
+      "last_transcript": "I have put the live Ward Table up on the right-hand pane for you. We are currently tracking Patient 1429 on renal dialysis, Patient 1430 post mitral valve repair, Patient 1431 with acute bacterial pneumonia, and Patient 1432 under neurological observation. Which patient would you like to examine first?",
       "patient_panel": {
         "name": "Mika Hämäläinen",
         "patientId": "1429",
@@ -24,35 +24,36 @@
         "room": "153",
         "department": "Nephrology — Renal Care",
         "protocol": "Routine Dialysis",
-        "rhythm": "Sustained Sinus Tachycardia",
-        "telemetryDetail": "HIGH 128 BPM • DOCTOR PAGED",
+        "rhythm": "Normal Sinus Rhythm",
+        "telemetryDetail": "Awake • Baseline 90 BPM • Signal Locked",
         "nurseRounds": "No comments from nurse rounds.",
-        "symptom": "Elevated Heart Rate (128 BPM) — Doctor Paged",
-        "dispatchStatus": "HIGH BPM (128) — ATTENDING DOCTOR PAGED TO WING A, ROOM 153"
+        "symptom": "Patient has not reported any discomfort or odd symptoms thus far.",
+        "dispatchStatus": ""
       },
       "nurse_notes": [],
-      "patient_symptoms": [
-        "Elevated Heart Rate (128 BPM) — Doctor Paged"
-      ],
+      "patient_symptoms": [],
       "nurse_dispatched": false,
       "check_in_active": false,
       "clinician_report_ready": false,
-      "alert_level": "high",
-      "doctor_paged": true,
+      "alert_level": "normal",
+      "doctor_paged": false,
       "crash_cart_active": false,
-      "emergency_message": "HIGH BPM (128 BPM) — ATTENDING DOCTOR PAGED BY MALCOLM",
-      "bedside_messages": [
+      "emergency_message": "",
+      "bedside_messages": [],
+      "audit_log": [
         {
-          "sender": "malcolm",
-          "text": "Mika, I notice your heart rate is elevated at 128 BPM. I have just paged your attending doctor to Wing A, Room 153. Please rest quietly and take slow breaths.",
-          "timestamp": "2026-11-17T00:05:51Z"
+          "timestamp": "2026-11-17T01:26:29Z",
+          "actor": "Clinician -> Malcolm",
+          "action": "MULTI_PATIENT_QUERY",
+          "details": "Answered cross-patient clinical RAG query over patients_db.json.",
+          "pii_redacted": true,
+          "engine": "Gemini gemini-3.5-flash-lite + Local RAG"
         }
       ],
-      "audit_log": [],
       "custom_pane": {
-        "kind": "patient",
-        "title": "",
-        "subtitle": "",
+        "kind": "ward_table",
+        "title": "Active Ward Roster — All Monitored Patients",
+        "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
         "filterWing": "",
         "generatedHtml": ""
       }
@@ -67,12 +68,12 @@
       "department": "Cardiothoracic Surgery",
       "protocol": "Post-Op Telemetry & Anticoagulation",
       "baseline_bpm": 76,
-      "current_bpm": 76,
-      "wave_state": "Awake / Normal Sinus Rhythm",
+      "current_bpm": 168,
+      "wave_state": "CRITICAL VENTRICULAR TACHYCARDIA (168 BPM) — CODE BLUE",
       "conversation_stage": "idle",
       "ui_mode": "idle",
-      "last_clinician_input": "",
-      "last_transcript": "Listening for clinician request...",
+      "last_clinician_input": "Malcolm, I notice Aino Virtanen's heart rate is elevated at 128 BPM. Please review telemetry or check in immediately.",
+      "last_transcript": "CODE BLUE EMERGENCY! Attention Doctor and Crash Cart Team: Patient 1430, Aino Virtanen in Wing B, Room 204 is in critical tachycardia at 168 BPM! Crash cart demanded to Wing B, Room 204 immediately!",
       "patient_panel": {
         "name": "Aino Virtanen",
         "patientId": "1430",
@@ -80,25 +81,46 @@
         "room": "204",
         "department": "Cardiothoracic Surgery",
         "protocol": "Post-Op Telemetry & Anticoagulation",
-        "rhythm": "Normal Sinus Rhythm",
+        "rhythm": "CRITICAL VENTRICULAR TACHYCARDIA (168 BPM) — CODE BLUE",
         "telemetryDetail": "Awake • Baseline 76 BPM • Signal Locked",
         "nurseRounds": "04:30 RN: Sternal dressing clean and dry; pain 2/10 managed with acetaminophen.",
-        "symptom": "No new acute discomfort reported since 04:30 nursing round.",
+        "symptom": "Elevated Heart Rate (128 BPM) — Doctor Paged; CRITICAL CODE BLUE: 168 BPM — Crash Cart Demanded",
         "dispatchStatus": ""
       },
       "nurse_notes": [
         "04:30 RN: Sternal dressing clean and dry; pain 2/10 managed with acetaminophen."
       ],
-      "patient_symptoms": [],
+      "patient_symptoms": [
+        "Elevated Heart Rate (128 BPM) — Doctor Paged",
+        "CRITICAL CODE BLUE: 168 BPM — Crash Cart Demanded"
+      ],
       "nurse_dispatched": false,
       "check_in_active": false,
       "clinician_report_ready": false,
-      "alert_level": "normal",
-      "doctor_paged": false,
-      "crash_cart_active": false,
-      "emergency_message": "",
-      "bedside_messages": [],
-      "audit_log": []
+      "alert_level": "critical",
+      "doctor_paged": true,
+      "crash_cart_active": true,
+      "emergency_message": "CODE BLUE (168 BPM) — CRASH CART DEMANDED TO WING B, ROOM 204",
+      "bedside_messages": [
+        {
+          "sender": "malcolm",
+          "text": "Aino, I notice your heart rate is elevated at 128 BPM. I have just paged your attending doctor to Wing B, Room 204. Please rest quietly and take slow breaths.",
+          "timestamp": "2026-11-17T01:28:54Z"
+        },
+        {
+          "sender": "malcolm",
+          "text": "CRITICAL EMERGENCY: Heart rate is 168 BPM. Code Blue alarm activated. Demanding a Crash Cart and paging your attending doctor to Wing B, Room 204 immediately!",
+          "timestamp": "2026-11-17T01:29:48Z"
+        }
+      ],
+      "audit_log": [],
+      "custom_pane": {
+        "kind": "patient",
+        "title": "",
+        "subtitle": "",
+        "filterWing": "",
+        "generatedHtml": ""
+      }
     },
     "1431": {
       "patient_id": "1431",
@@ -193,19 +215,19 @@
   },
   "calendar_events": [],
   "last_page_alert": {
-    "id": "emerg_high_1794873933179",
-    "eventId": "bpm_high_1429",
-    "severity": "high",
-    "crashCart": false,
-    "patientId": "1429",
-    "patientName": "Mika Hämäläinen",
-    "title": "HIGH BPM ALERT — DOCTOR PAGED (128 BPM)",
-    "location": "Wing A • Room 153",
-    "displayTime": "2:05 AM",
+    "id": "emerg_critical_1794878988152",
+    "eventId": "bpm_critical_1430",
+    "severity": "critical",
+    "crashCart": true,
+    "patientId": "1430",
+    "patientName": "Aino Virtanen",
+    "title": "CODE BLUE — CRASH CART DEMANDED (168 BPM)",
+    "location": "Wing B • Room 204",
+    "displayTime": "3:29 AM",
     "reminderMinutesBefore": 0,
-    "announcement": "Hospital Paging System. Attention Doctor: Patient 1429, Mika Hämäläinen in Wing A, Room 153 has an elevated heart rate of 128 BPM. Please review telemetry or check in immediately.",
-    "timestamp": "2:05:33 AM",
+    "announcement": "CODE BLUE EMERGENCY! Attention Doctor and Crash Cart Team: Patient 1430, Aino Virtanen in Wing B, Room 204 is in critical tachycardia at 168 BPM! Crash cart demanded to Wing B, Room 204 immediately!",
+    "timestamp": "3:29:48 AM",
     "isTest": false
   },
-  "reply_seq": 1794873948470
+  "reply_seq": 1794878988205
 }

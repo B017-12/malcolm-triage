@@ -8,12 +8,12 @@
   "department": "Nephrology — Renal Care",
   "protocol": "Routine Dialysis",
   "baseline_bpm": 90,
-  "current_bpm": 128,
-  "wave_state": "Sustained Sinus Tachycardia (128 BPM) — Doctor Paged",
+  "current_bpm": 90,
+  "wave_state": "Awake / Normal Sinus Rhythm",
   "conversation_stage": "idle",
   "ui_mode": "patient_stats",
-  "last_clinician_input": "",
-  "last_transcript": "Hospital Paging System. Attention Doctor: Patient 1429, Mika Hämäläinen in Wing A, Room 153 has an elevated heart rate of 128 BPM. Please review telemetry or check in immediately.",
+  "last_clinician_input": "I would like to examine patient number one four thrary zero first",
+  "last_transcript": "I have put the live Ward Table up on the right-hand pane for you. We are currently tracking Patient 1429 on renal dialysis, Patient 1430 post mitral valve repair, Patient 1431 with acute bacterial pneumonia, and Patient 1432 under neurological observation. Which patient would you like to examine first?",
   "patient_panel": {
     "name": "Mika Hämäläinen",
     "patientId": "1429",
@@ -21,35 +21,36 @@
     "room": "153",
     "department": "Nephrology — Renal Care",
     "protocol": "Routine Dialysis",
-    "rhythm": "Sustained Sinus Tachycardia",
-    "telemetryDetail": "HIGH 128 BPM • DOCTOR PAGED",
+    "rhythm": "Normal Sinus Rhythm",
+    "telemetryDetail": "Awake • Baseline 90 BPM • Signal Locked",
     "nurseRounds": "No comments from nurse rounds.",
-    "symptom": "Elevated Heart Rate (128 BPM) — Doctor Paged",
-    "dispatchStatus": "HIGH BPM (128) — ATTENDING DOCTOR PAGED TO WING A, ROOM 153"
+    "symptom": "Patient has not reported any discomfort or odd symptoms thus far.",
+    "dispatchStatus": ""
   },
   "nurse_notes": [],
-  "patient_symptoms": [
-    "Elevated Heart Rate (128 BPM) — Doctor Paged"
-  ],
+  "patient_symptoms": [],
   "nurse_dispatched": false,
   "check_in_active": false,
   "clinician_report_ready": false,
-  "alert_level": "high",
-  "doctor_paged": true,
+  "alert_level": "normal",
+  "doctor_paged": false,
   "crash_cart_active": false,
-  "emergency_message": "HIGH BPM (128 BPM) — ATTENDING DOCTOR PAGED BY MALCOLM",
-  "bedside_messages": [
+  "emergency_message": "",
+  "bedside_messages": [],
+  "audit_log": [
     {
-      "sender": "malcolm",
-      "text": "Mika, I notice your heart rate is elevated at 128 BPM. I have just paged your attending doctor to Wing A, Room 153. Please rest quietly and take slow breaths.",
-      "timestamp": "2026-11-17T00:05:51Z"
+      "timestamp": "2026-11-17T01:26:29Z",
+      "actor": "Clinician -> Malcolm",
+      "action": "MULTI_PATIENT_QUERY",
+      "details": "Answered cross-patient clinical RAG query over patients_db.json.",
+      "pii_redacted": true,
+      "engine": "Gemini gemini-3.5-flash-lite + Local RAG"
     }
   ],
-  "audit_log": [],
   "custom_pane": {
-    "kind": "patient",
-    "title": "",
-    "subtitle": "",
+    "kind": "ward_table",
+    "title": "Active Ward Roster — All Monitored Patients",
+    "subtitle": "Real-Time Multi-Patient EHR & Telemetry Matrix",
     "filterWing": "",
     "generatedHtml": ""
   }
